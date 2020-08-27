@@ -3,293 +3,347 @@ import MathOptInterface
 using DelimitedFiles
 using JuMP,MosekTools,Convex
 
-function reconfiguraitonSolver()
-    #读取必要数据文件########################################
-    ##TODO 需要把该函数重新设计为所有参数可文件中读取，从而可形成自动化数据生成脚本
+####################静态数据集路径###########################
+#ATTITION!现在填入的是测试用单步规划数据集
+const loadFilePath="33BUSdata//forTEST//TEST_ts_33bus_load.csv"
+const pvFilePath="33BUSdata//forTEST//TEST_ts_33bus_PV.csv"
+
+
+####################ATTITION!以下为形成测试数据的语句，生成.jl文件时注释掉
+#读取TESTload
+#已测试
+readTESTLoadData=readdlm(loadFilePath,',',header=true)
+TESTLoadData=readTESTLoadData[1]
+TESTlistP=TESTLoadData[:,3]
+TESTlistQ=TESTLoadData[:,4]
+global consumeP=zeros(33,9)
+global consumeQ=zeros(33,9)
+for iTESTLoad in 1:33
+    for tTESTLoad in 1:points
+        consumeP[iTESTLoad,tTESTLoad]=TESTlistP[iTESTLoad]
+        consumeQ[iTESTLoad,tTESTLoad]=TESTlistQ[iTESTLoad]    
+    end
+end
+#读取TESTPV
+#已测试
+readTESTPVData=readdlm(pvFilePath,',',header=true)
+TESTPVData=readTESTPVData[1]
+global PVP=zeros(33,9)
+TESTlistPVP=TESTPVData[:,3]
+for iTESTPV in 1:33
+    for tTESTLoad in 1:points
+        PVP[iTESTPV,tTESTLoad]=TESTlistPVP[iTESTPV]
+    end
+end
+
+
+
+#######################全局常量##############################
+#功率因数
+const powerFactor=0.95
+#规划时间尺度 26周
+#points=4368
+#单步规划 points=1
+const points=1
+#节点负荷时间序列矩阵 P or Q(i,t) 行i=节点号 列t=时间
+#FIXME补全读取函数
+#ATTITION!测试时不要运行下面这条语句
+const consumeP,consumeQ=readConsumePower(loadFilePath,powerFactor,points)
+#PV有功出力时间序列矩阵 P(i,t) 行i=节点号 列t=时间
+#ATTITION!测试时不要运行下面这条语句
+#FIXME补全读取函数
+const PvP=readPVPower(pvFilePath,points)
+#网损电价
+const priceGrid=1#FIXME:网损成本需要设置，找参考文献！
+#操作损耗
+const costSwitch=1#FIXME:操作成本需要设置，找参考文献！
+#节点电压上下界,原文中电压等级为12kV
+const lowVNode=12000*0.9
+const highVNode=12000*1.1
+#每次开关最大动作次数
+const maxNS=2
+#无限制单步的优化用下面这个
+#const maxNS=999
+#大M 至少大于节点数即可
+const bigM=999
+
+#运行主函数
+dpSolverReconfiguraiton33Bus()
+
+###############################
+
+function dpSolverReconfiguraiton33Bus()
+    
+    ####################读取必要数据文件########################################
+
+    ##TODO 下面两个路径可作为参数传入
     #文件路径
-    loadFilePath=""
-    pvFilePath=""
     paraLinePath="33BUSdata//para_33bus_line.csv"
     paraNodePath="33BUSdata//para_33bus_node.csv" 
-    
+
+    #ATTITION!仅供测试用！形成脚本时注意注释掉
+    paraLinePath="33BUSdata//forTEST//TEST_para_33bus_line.csv"
+    paraNodePath="33BUSdata//forTEST//TEST_para_33bus_node.csv"
+
     #读取线路参数文件
+    #reference:  M.E.Baran,1989,TPS
     readLineData=readdlm(paraLinePath,',',header=true)
     lineData=readLineData[1]
-    numLine=round.(Int64,lineData[:,1])
+    listLine=round.(Int64,lineData[:,1])
     startNode=round.(Int64,lineData[:,2])
     endNode=round.(Int64,lineData[:,3])
     lineResistance=lineData[:,4]
     lineImpedance=lineData[:,5]
     lineCurrentMAX=lineData[:,6]
-
+    #读取联络开关位置，备用
+    listFlagTieSwitch=lineData[:,7]
     #生成线路相关数据结构
     #总节点个数，线路条数
-    noNode=max(maximum(startNode),maximum(endNode))
-    noLine=length(numLine)
+    numNode=max(maximum(startNode),maximum(endNode))
+    numLine=length(listLine)
     #遍历系统中所有节点的迭代器
-    nodes=1:noNode
+    nodes=1:numNode
+    #遍历非根节点的迭代器
+    #ATTITION!：这里人工指定了root=1
+    rootFreeNodes=2:numNode
+    #(i,t) 节点-时间 二元组
+    itPair=time1itPair(numNode,points)
     #生成标准情况下的线路(i,j)元组
-    lines=Tuple((startNode[i],endNode[i]) for i in 1:noLine)
+    lines=Tuple((startNode[i],endNode[i]) for i in 1:numLine)
+    #标准情况下逆序的线路(j,i)元组
+    reverseLines=Tuple((endNode[i],startNode[i]) for i in 1:numLine)
     #线路电阻值与阻抗的字典
     rLineDict=Dict(lines .=>lineResistance)
     xLineDict=Dict(lines .=>lineImpedance)
     #线路最大载流量的字典
     maxCurrentLineDict=Dict(lines .=>lineCurrentMAX)
+    #(i,j,t)三元组穷举，i,j∈line，t=0或1:points
+    time0NodePair=linesToTimePair(lines,points,0)
+    time1NodePair=linesToTimePair(lines,points,1)
+    #(i,j,t) (j,i,t)三元组 t=1：points
+    ijtjit1Pair=ijjiTimePair(lines,points,1)
+    #(i,j,0)三元组
+    ij0Pair=time0ijtPair(lines)
+    #联络开关(i,j,0) 以及普通支路(i,j,0)
+    ij0TiePair,ij0ComPair=ij0SET(lineData)
     
     #读取节点参数文件
-    readNodeData=readdlm(paraNodePath,',',header=ture)
-    nodeData=readLineData[1]
-    #######################常量##############################
-    #功率因数
-    powerFactor=0.95
-    #规划时间尺度 26周
-    points=4368
-    #微型燃气轮机单位功率的成本
-    costMT=(6=>1,13=>1,22=>1,25=>1,28=>1,33=>1)#FIXME:MT的成本需要设置，找参考文献！
-    #节点负荷时间序列
-    consumeP,consumeQ=readConsumePower(loadFilePath,powerFactor,points)
-    #PV有功出力时间序列
-    PvP=readPVPower(pvFilePath,points)
-    #网损电价
-    priceGrid=1#FIXME:网损成本需要设置，找参考文献！
-    #操作损耗
-    costSwitch=1#FIXME:操作成本需要设置，找参考文献！
-    #普通负荷节点集合
-    setLoadNode=[2,3,4,5,8,9,10,11,12,14,15,16,17,19,20,21,23,24,26,27,29,30,31,32] 
-    #含PV节点集合
-    setPVNode=[7,18]
-    #含MT节点集合
-    setMTNode=[6,13,22,25,28,33]
-    #变电站节点集合
-    setSubstationNode=[1]
-    #传输线参数 电阻real() ,阻抗imag()，最大传输电流
-    #reference:  M.E.Baran,1989,TPS
-    #FIXME:最大传输电流要重新设计，找参考文献！
-    data
-    parameterLine=Dict()
-    parameterLine[(1,2)]=(0.0922+0.0470im,500)
-    parameterLine[(2,3)]=(0.4930+0.2511im,500)
-    parameterLine[(3,4)]=(0.3660+0.1864im,500)
-    parameterLine[(4,5)]=(0.3811+0.1941im,500)
-    parameterLine[(5,6)]=(0.8190+0.7070im,500)
-    parameterLine[(6,7)]=(0.1872+0.6188im,500)
-    parameterLine[(7,8)]=(0.7114+0.2351im,500)
-    parameterLine[(8,9)]=(1.0300+0.7400im,500)
-    parameterLine[(9,10)]=(1.0440+0.7400im,500)
-    parameterLine[(10,11)]=(0.1966+0.0650im,500)
-    parameterLine[(11,12)]=(0.3744+0.1238im,500)
-    parameterLine[(12,13)]=(1.4680+1.1550im,500)
-    parameterLine[(13,14)]=(0.5416+0.7129im,500)
-    parameterLine[(14,15)]=(0.5910+0.5260im,500)
-    parameterLine[(9,15)]=(2.0000+2.0000im,500)
-    parameterLine[(15,16)]=(0.7463+0.5450im,500)
-    parameterLine[(16,17)]=(1.2890+1.7210im,500)
-    parameterLine[(17,18)]=(0.7320+0.5740im,500)
-    parameterLine[(2,19)]=(0.1640+0.1565im,500)
-    parameterLine[(19,20)]=(1.5042+1.3554im,500)
-    parameterLine[(20,21)]=(0.4095+0.4784im,500)
-    parameterLine[(8,21)]=(2.0000+2.0000im,500)
-    parameterLine[(21,22)]=(0.7089+0.9373im,500)
-    parameterLine[(12,22)]=(2.0000+2.0000im,500)
-    parameterLine[(3,23)]=(0.4512+0.3083im,500)
-    parameterLine[(23,24)]=(0.8980+0.7091im,500)
-    parameterLine[(24,25)]=(0.8960+0.7011im,500)
-    parameterLine[(25,29)]=(0.5000+0.5000im,500)
-    parameterLine[(6,26)]=(0.2030+0.1034im,500)
-    parameterLine[(26,27)]=(0.2842+0.1447im,500)
-    parameterLine[(27,28)]=(1.0590+0.9337im,500)
-    parameterLine[(28,29)]=(0.8042+0.7006im,500)
-    parameterLine[(29,30)]=(0.5075+0.2585im,500)
-    parameterLine[(30,31)]=(0.9744+0.9630im,500)
-    parameterLine[(31,32)]=(0.3105+0.3619im,500)
-    parameterLine[(32,33)]=(0.3410+0.5302im,500)
-    parameterLine[(18,33)]=(0.5000+0.5000im,500)
-    #节点电压上下界,原文中电压等级为12kV
-    lowVNode=12000*0.9
-    highVNode=12000*1.1
-    #MT出力上下界
-    lowMTactivePower=(6=>0,13=>0,22=>10,25=>0,28=>0,33=>0)
-    highMTactivePower=(6=>99,13=>99,22=>99,25=>99,28=>99,33=>99)#FIXME:每台MT有功出力上界
-    lowMTreactivePower=(6=>0,13=>0,22=>10,25=>0,28=>0,33=>0)
-    highMTreactivePower=(6=>99,13=>99,22=>99,25=>99,28=>99,33=>99)#FIXME:每台MT无功出力上界
-    #拓扑的时间序列
-    originTopology=[(1,2),(2,3),(3,4),(4,5),(5,6),(6,7),(7,8),(8,9),(9,10),
-    (10,11),(11,12),(12,13),(13,14),(14,15),(9,15),(15,16),(16,17),(17,18),(2,19),(19,20)
-    ,(20,21),(8,21),(21,22),(12,22),(3,23),(23,24),(24,25),(25,29),(6,26),(26,27),
-    (27,28),(28,29),(29,30),(30,31),(31,32),(32,33),(18,33)]
-    networkTopology=zeros(33,33,points)
-    networkTopology[1,2,1]=1
-    networkTopology[2,3,1]=1
-    networkTopology[3,4,1]=1
-    networkTopology[4,5,1]=1
-    networkTopology[5,6,1]=1
-    networkTopology[6,7,1]=1
-    networkTopology[7,8,1]=1
-    networkTopology[8,9,1]=1
-    networkTopology[9,10,1]=1
-    networkTopology[10,11,1]=1
-    networkTopology[11,12,1]=1
-    networkTopology[12,13,1]=1
-    networkTopology[13,14,1]=1
-    networkTopology[14,15,1]=1
-    networkTopology[9,15,1]=0
-    networkTopology[15,16,1]=1
-    networkTopology[16,17,1]=1
-    networkTopology[17,18,1]=1
-    networkTopology[2,19,1]=1
-    networkTopology[19,20,1]=1
-    networkTopology[20,21,1]=1
-    networkTopology[8,21,1]=0
-    networkTopology[21,22,1]=1
-    networkTopology[12,22,1]=0
-    networkTopology[3,23,1]=1
-    networkTopology[23,24,1]=1
-    networkTopology[24,25,1]=1
-    networkTopology[25,29,1]=0
-    networkTopology[6,26,1]=1
-    networkTopology[26,27,1]=1
-    networkTopology[27,28,1]=1
-    networkTopology[28,29,1]=1
-    networkTopology[29,30,1]=1
-    networkTopology[30,31,1]=1
-    networkTopology[31,32,1]=1
-    networkTopology[32,33,1]=1
-    networkTopology[18,33,1]=0
-    #大M
-    bigM=9999
- 
-    ########变量##################################
-    #表示线路通断的alpha矩阵，t=0为初始态
-
-   for oT in originTopology
-       for t=1:points
-            tempT=oT 
-           
-       end
-   end
-
-    bus33Reconfiguration=Model(with_optimizer(Mosek.Optimizer))
-    @variable(bus33Reconfiguration,alpha[i123,j,t=1:points],Bin)
-    #注入有功\无功功率
-    injectionActivePower=zeros(33,points)
-    @variable(bus33Reconfiguration,injectionActivePower,base_name="injP")
-    injectionReactivePower=zeros(33,points)
-    @variable(bus33Reconfiguration,injectionReactivePower,base_name="injQ")
-    #首端有功\无功功率
-    apparentActivePower=zeros(33,33,points)
-    @variable(bus33Reconfiguration,apparentActivePower,base_name="apparentP")
-    apparentReactivePower=zeros(33,33,points)
-    @variable(bus33Reconfiguration,apparentReactivePower,base_name="apparentQ")
-    #l_{ij}支路电流平方
-    sqrLineCurrent=zeros(33,33,points)
-    @variable(bus33Reconfiguration,sqrLineCurrent,base_name="sqrI")
-    #节点电压幅值
-    nodeVoltage=zeros(33,points)
-    @variable(bus33Reconfiguration,nodeVoltage,base_name="nodeV")
-    #辅助变量b_{ij}
-    isParent=zeros(33,33,points)
-    @variable(bus33Reconfiguration,isParent,base_name="b")
-    #储存开关操作次数
-    numSwitchOperation=zeros(points)
-    @variable(bus33Reconfiguration,numSwitchOperation,base_name="NS")
-    #动作次数约束所用到的辅助布尔型变量
-    lambda=zeros(33,33,points)
-    @variable(bus33Reconfiguration,lambda,base_name="lambda")
-
-   
-    ########变量取值范围#########################
+    readNodeData=readdlm(paraNodePath,',',header=true)
+    nodeData=readNodeData[1]
+    #找出变电站节点元组
+    listSub=findSub(nodeData)
+    #找出PV节点元组
+    listPV=findPV(nodeData)
+    #找出并创建MT节点信息的字典
+    #字典说明：键值=节点编号；值=(有功下界，有功上界，无功下界，无功上界，成本C)
+    mtInfDict=findMT(nodeData)
+    #找出MT节点元组
+    listMT=Tuple(Set(keys(mtInfDict)))
+    #找出普通负载节点元组
+    listPureLoad=findPureLoad(nodeData,numNode)
     
-    #布尔量
-    for i in networkTopology
-        @constraint(bus33Reconfiguration,i in MOI.ZeroOne())        
+    ###################建立JuMP模型##############################
+    bus33Reconfiguration=Model(with_optimizer(Mosek.Optimizer))
+
+    ###################目标函数######################################
+    #ATTITION! 负载未定义 未编译
+    @objective(bus33Reconfiguration,min,sum((sum((mtInfDict[mtNode][5])*(injectionActivePower[(mtNode,t)]
+    +consumeP[mtNode,t]) for mtNode in listMT)
+    +sum(priceGrid*sqrLineCurrent[(line[1],line[2],t)]*rLineDict[line] for line in lines)+
+    sum(priceGrid*injectionActivePower[(subNode,t)] for subNode in listSub)
+    +sum(costSwitch*numSwitchOperation[t])) for t in 1:points))
+  
+    ######################变量设置##################################
+   
+    #表示线路通断的alpha布尔矩阵
+    #ATTITION!这里从时间0开始，代表初始状态
+    @variable(bus33Reconfiguration,alpha[ijt in time0NodePair],Bin)
+
+    #用于构建辐射状拓扑约束的中ST约束辅助变量b_{ijt}
+    #ATTITION!这里从时间1开始
+    #ATTITION!bAuxiliary包含(i,j)和它的反向对(j,i)
+    @variable(bus33Reconfiguration,bAuxiliary[ijt in ijtjit1Pair],Bin)
+
+    #用于构建辐射状拓扑约束的中SCF约束虚拟首端网络流变量apparentFictitiousFlow_{ijt}
+    #ATTITION!这里从时间1开始
+    @variable(bus33Reconfiguration,apparentFictitiousFlow[ijt in ijtjit1Pair])
+
+    #用于构建辐射状拓扑约束的中SCF约束虚拟负载变量fictitiousLoad_{ijt}
+    #ATTITION!这里从时间1开始
+    @variable(bus33Reconfiguration,fictitiousLoad[it in itPair]==1)
+
+    #用于构建开关次数约束的辅助变量lambda_{ijt}
+    #ATTITION!这里从时间1开始
+    @variable(bus33Reconfiguration,lambda[ijt in time1NodePair],Bin)
+
+    #储存开关操作次数的辅助变量numSwitchOperation_{t}
+    @variable(bus33Reconfiguration,numSwitchOperation[t in listPoints(points)]<=maxNS)
+
+    #注入有功\无功功率 P Q _{i t}
+   
+    @variable(bus33Reconfiguration,injectionActivePower[it in itPair])
+    @variable(bus33Reconfiguration,injectionReactivePower[it in itPair])
+
+    #首端有功\无功功率 P Q _{i j t}
+    @variable(bus33Reconfiguration,apparentActivePower[ijt in time1NodePair])
+    @variable(bus33Reconfiguration,apparentReactivePower[ijt in time1NodePair])
+
+    #l_{i j t}支路电流平方
+    #每条支路最大载流量需要查lineData
+    @variable(bus33Reconfiguration,sqrLineCurrent[ijt in time1NodePair])
+
+    #节点电压幅值 V_{i t}
+    @variable(bus33Reconfiguration,lowVNode<=nodeVoltage[it in itPair]<=highVNode)
+
+    #######################补充的变量取值范围#########################
+
+    #alpha的(i,j,0)值就是系统初始状态
+    for pair in ij0TiePair
+        @constraint(bus33Reconfiguration,alpha[pair]==0)
+    end
+    for pair in ij0ComPair
+        @constraint(bus33Reconfiguration,alpha[pair]==1)
     end
 
-    for i in isParent
-        @constraint(bus33Reconfiguration,i in MOI.ZeroOne())
+    #每条支路最大载流量需要查lineData
+    for line in lines
+        for t in 1:points
+            @constraint(bus33Reconfiguration,sqrLineCurrent[(line[1],line[2],t)]<=maxCurrentLineDict[line])
+        end
     end
-
-    for i in lambda
-        @constraint(bus33Reconfiguration,i in MOI.ZeroOne())      
-    end
-    #注入功率：
+   
+    #注入功率：P_i=P发-P用
+    #注意这里需要分以下情况：
+    #1.纯负载节点或纯变电站节点;2.含PV的节点;3.含MT的节点
     #对于一般节点 
-    for i in setLoadNode 
-        for t=1:points
-            @constraint(bus33Reconfiguration,injectionActivePower[i,t]==-consumeP[i,t])
-            @constraint(bus33Reconfiguration,injectionReactivePower[i,t]==-consumeQ[i,t])
-        end       
-    end
+    #ATTITION!在PV Load数据读取函数编写完成前不要运行此部分！！
+    for i in listPureLoad
+        for t in 1:points
+            @constraint(bus33Reconfiguration,injectionActivePower[(i,t)]==-consumeP[i,t])
+            @constraint(bus33Reconfiguration,injectionReactivePower[(i,t)]==-consumeQ[i,t])
+        end
+    end       
     #对于含PV的节点
-    for i in setPVNode
-        for t=1:points
-            @constraint(bus33Reconfiguration,injectionActivePower[i,t]==PvP[i,t]-consumeP[i,t])
-            @constraint(bus33Reconfiguration,injectionReactivePower[i,t]==-consumeQ[i,t])
+    for i in listPV
+        for t in 1:points
+            @constraint(bus33Reconfiguration,injectionActivePower[(i,t)]==PvP[i,t]-consumeP[i,t])
+            @constraint(bus33Reconfiguration,injectionReactivePower[(i,t)]==-consumeQ[i,t])
     end
     #对于含MT的节点
-    for i in setMTNode
-        for t=1:points
-            @constraint(bus33Reconfiguration,lowMTactivePower<=(injectionActivePower[i,t]+consumeP[i,t])<=highMTactivePower)
-            @constraint(bus33Reconfiguration,lowMTreactivePower<=(injectionReactivePower[i,t]+consumeQ[i,t])<=highMTreactivePower)
-    end
-    #传输线电流
-    for k in keys(parameterLine)
-        for t=1:points 
-            l=parameterLine[k]
-            @constraint(bus33Reconfiguration,sqrLineCurrent[i,j,t]<=l[2])  
-        end        
-    end
-    #节点运行电压
-    for i=1:33
-        for t=1:points
-            @constraint(bus33Reconfiguration,lowVNode<=nodeVoltage[i,t]<=highVNode)   
-        end 
-    end
-    #每步规划时开关操作不多于两次
-    for t=1:points
-        @constraint(bus33Reconfiguration,numSwitchOperation[t]<=2)       
-    end
-    
- 
-
-    ########约束条件########################
-    #网络流模型的功率平衡方程
-    for t=1:points
-        for node in checkNodes(networkTopology,t)
-            tempP1=0
-            tempQ1=0
-            for pair in findNodeChild(node)
-                tempP1+=apparentActivePower[pair]
-                tempQ1+=apparentReactivePower[pair]
-            end
-            tempP2=0
-            tempQ2=0
-            for pair in findNodeParent(node)
-                temp=parameterLine[pair]
-                tempP2+=apparentActivePower[pair]-real(temp[1])*sqrLineCurrent[pair(1),pair(2),t]
-                tempQ2+=apparentReactivePower[pair]-imag(temp[1])*sqrLineCurrent[pair(1),pair(2),t]
-            end
-            @constraint(bus33Reconfiguration,lowVNode<=nodeVoltage[i,t]<=highVNode)
-            @constraint(bus33Reconfiguration,lowVNode<=nodeVoltage[i,t]<=highVNode)
+    for i in listMT
+        for t in 1:points
+            mtInf=mtInfDict[i]
+            @constraint(bus33Reconfiguration,mtInf[1]<=(injectionActivePower[(i,t)]+consumeP[(i,t)])<=mtInf[2])
+            @constraint(bus33Reconfiguration,mtInf[3]<=(injectionReactivePower[(i,t)]+consumeQ[(i,t)])<=mtInf[4])
         end
     end
 
+    ########约束条件########################
+    #网络流模型的功率平衡方程
+    #编译通过
+    for node in nodes
+        for t in 1:points
+            if checkNodeAlive(node,nodeData)
+                @constraint(bus33Reconfiguration,injectionActivePower[(node,t)]
+                ==sum(apparentActivePower[(j,k,t)] for (j,k) in findjkForwardNeighborPair(node,lines,lineData) if j==node)-
+                sum(apparentActivePower[(i,j,t)]-rLineDict[(i,j)]*sqrLineCurrent[(i,j,t)] 
+                for (i,j) in findijBackforwardNeighborPair(node,lines,lineData) if j==node))
+            
+                @constraint(bus33Reconfiguration,injectionReactivePower[(node,t)]
+                ==sum(apparentReactivePower[(j,k,t)] for (j,k) in findjkForwardNeighborPair(node,lines,lineData) if j==node)-
+                sum(apparentReactivePower[(i,j,t)]-xLineDict[(i,j)]*sqrLineCurrent[(i,j,t)] 
+                for (i,j) in findijBackforwardNeighborPair(node,lines,lineData) if j==node))
+            end    
+        end
+    end
 
-    #目标函数
-    @objective(bus33Reconfiguration,min,)
+    #节点电压联系方程
+    #编译通过
+    for line in lines
+        for t in 1:points
+            if checkLineAlive(line,lineData)
+                iVStart=line[1]
+                jVEnd=line[2]
+                @constraint(bus33Reconfiguration,(nodeVoltage[(iVStart,t)]-nodeVoltage[(jVEnd,t)])>=(-bigM*(1-alpha[(iVStart,jVEnd,t)])+
+                2*(rLineDict[line]*apparentActivePower[(iVStart,jVEnd,t)]+xLineDict[line]*apparentReactivePower[(iVStart,jVEnd,t)]-
+                ((rLineDict[line])^2+(xLineDict[line]^2))*sqrLineCurrent[(iVStart,jVEnd,t)])))
 
+                @constraint(bus33Reconfiguration,(nodeVoltage[(iVStart,t)]-nodeVoltage[(jVEnd,t)])<=(bigM*(1-alpha[(iVStart,jVEnd,t)])+
+                2*(rLineDict[line]*apparentActivePower[(iVStart,jVEnd,t)]+xLineDict[line]*apparentReactivePower[(iVStart,jVEnd,t)]-
+                ((rLineDict[line])^2+(xLineDict[line]^2))*sqrLineCurrent[(iVStart,jVEnd,t)])))
+            end
+        end
+    end
 
+    #首端功率P^2+Q^2=VI^2的旋转二阶锥约束
+    #TODO：JuMP提供的形式和标准有些不一样，需要进一步确认
+    #编译通过
+    for line in lines
+        if checkLineAlive(line,lineData)
+            iRSOCStart=line[1]
+            jRSOCEnd=line[2]
+            for t in 1:points
+                @constraint(bus33Reconfiguration,[sqrLineCurrent[(iRSOCStart,jRSOCEnd,t)],0.5*nodeVoltage[(iRSOCStart,t)],
+                apparentActivePower[(iRSOCStart,jRSOCEnd,t)],apparentReactivePower[(iRSOCStart,jRSOCEnd,t)]] in RotatedSecondOrderCone())
+            end
+        end
+    end
 
+    #基于ST+SCF生成树约束
+    #Reference: ST = J.A.Taylor,2012,TPS; SCF = R.A.Jabr,2013,TPS
+    #csv中的(start,end)中的start已被定义为end的父节点
 
-
-
-
+    #ST约束
+    #编译通过
+    for line in lines
+        if checkLineAlive(line,lineData)
+            iSTStart=line[1]
+            jSTEnd=line[2]
+            for t in 1:points
+                @constraint(bus33Reconfiguration,(bAuxiliary[(iSTStart,jSTEnd,t)]+bAuxiliary[(jSTEnd,iSTStart,t)])==alpha[(iSTStart,jSTEnd,t)])
+            end
+        end
+    end
+    for node in nodes
+        for t in 1:points   
+            #在寻找邻居节点时已自带线路存活检测功能
+            @constraint(bus33Reconfiguration,sum(bAuxiliary[n] for n in findijtNeighborNode(node,lines,lineData,points))==1)
+        end
+    end
+        #TODO：这里假设变电站就是唯一的root节点了
+    subNeiijtPair=findijtNeighborNode(1,lines,lineData,points)
+    for ijt in subNeiijtPair
+        @constraint(bus33Reconfiguration,bAuxiliary[ijt]==0)
+    end
+    #SCF约束
+    #编译通过
+    for node in rootFreeNodes
+        for t in 1:points
+            if checkNodeAlive(node,nodeData)
+                @constraint(bus33Reconfiguration,sum(apparentFictitiousFlow[(i,k,t)] for (i,k) in findjkForwardNeighborPair(node,lines,lineData) if i==node)+
+                fictitiousLoad[(node,t)]==sum(apparentFictitiousFlow[(k,i,t)] for (k,i) in findijBackforwardNeighborPair(node,lines,lineData) if i==node))
+            end
+        end
+    end
+    for line in lines
+        for t in 1:points
+            @constraint(bus33Reconfiguration,(apparentFictitiousFlow[(line[1],line[2],t)])<=(bigM*alpha[(line[1],line[2],t)]))
+        end
+    end
+    for line in lines
+        for t in 1:points
+            @constraint(bus33Reconfiguration,(apparentFictitiousFlow[(line[1],line[2],t)])>=(-bigM*alpha[(line[1],line[2],t)]))
+        end
+    end
 
 end
 
-################辅助函数#################################
+##############################功能函数#############################################
 function readConsumePower(filePath,powerFactor,points)
     #TODO：补全功能
     # 在输入时间尺度以及功率因数下返回各节点有功负载、无功负载.
+    #格式：
+    #
     return P,Q
 end
 
@@ -299,20 +353,250 @@ function readPVPower(filePath,points)
     return P
 end
 
-function checkNodes(Link,t)
-    #TODO：补全功能
-    #输入拓扑及时刻，返回该拓扑下节点的列表
-    return nodeList
+function checkNodeAlive(i,Data)
+    #已测试
+    #检查一个节点是否存活 返回布尔量
+    #存活指负荷\发电机是否退出
+    #生存为假代表节点Pi=0
+    if Data[i,9]==1
+        return true
+    else
+        return false
+    end
 end
 
-function findNodeChild(j)
-    #TODO：补全功能
-    #输入一个节点编号，返回 自身与所有近邻的下游节点组成元组的列表
-    return childTuple
+function checkLineAlive(line,Data)
+    #已测试
+    #检查一条线路(i,j)是否存活
+    #存活为假说明该线路不得参与任何相关约束
+    for i in 1:length(Data[:,1])
+        if (Data[i,2],Data[i,3])==line
+            if Data[i,8]==1
+                return true
+            else   
+                return false
+            end        
+        end
+    end
 end
 
-function findNodeParent(i)
-    #TODO：补全功能
-    #输入一个节点编号，返回 自身与所有近邻的上游节点组成的元组列表
-    return parentTuple
+function findSub(Data)
+    #已测试
+    #寻找并返回变电站节点编号的元组
+    find=[]
+    i=0
+    for j in Data[:,2]
+        i+=1
+        if round.(Int64,j)==1
+           push!(find,i) 
+        end
+    end
+    return Tuple(find)
 end
+
+function findPV(Data)
+    #已测试
+    #寻找并返回PV节点编号的元组
+    find=[]
+    i=0
+    for j in Data[:,3]
+        i+=1
+        if round.(Int64,j)==1
+           push!(find,i) 
+        end
+    end
+    return Tuple(find)
+end
+
+function findPureLoad(Data,numNode)
+    #已测试
+    #寻找并返回纯负载节点编号的元组
+    Sub=Set(findSub(Data))
+    PV=Set(findPV(Data))
+    MT=Set(keys(findMT(Data)))
+    #并集运算
+    temp=union(Sub,PV)
+    temp=union(temp,MT)
+    ALL=Set(i for i in 1:numNode)
+    #差集运算
+    Load=setdiff(ALL,temp)
+    return Tuple(Load)
+end
+
+function findMT(Data)
+    #已测试
+    #寻找并返回:
+    #生成MT编号、运行成本、MT出力上下界的字典
+    findNode=[]
+    findLP=[]
+    findHP=[]
+    findLQ=[]
+    findHQ=[]
+    findCost=[]
+    i=0
+    for j in Data[:,4]
+        i+=1
+        if round.(Int64,j)==1
+           push!(findNode,i)
+           push!(findLP,Data[i,5]) 
+           push!(findHP,Data[i,6]) 
+           push!(findLQ,Data[i,7]) 
+           push!(findHQ,Data[i,8]) 
+           push!(findCost,Data[i,9]) 
+        end
+    end
+    TfindNode=Tuple(findNode)
+    MTdata=Tuple((findLP[k],findHP[k],findLQ[k],findHQ[k],findCost[k]) for k in 1:length(TfindNode))
+    MTdict=Dict(TfindNode .=>MTdata)
+    return MTdict
+end
+
+function linesToTimePair(lines,points,start)
+    #已测试
+    #将(i,j)组成的元组转换为(i,j,t)组成的大型元组
+    #ATTITION!这里时间可以设置从0或1开始
+    result=[]
+    for pair in lines
+        for t in start:points
+            #取元组中数据
+            temp=(pair[1],pair[2],t)
+            push!(result,temp)
+        end
+    end
+    ijtPairTuple=Tuple(result)
+    return ijtPairTuple
+end
+
+function ijjiTimePair(lines,points,start)
+    #已测试
+    #将(i,j)组成的元组转换为(i,j,t),(j,t,t)组成的大型元组
+    #ATTITION!这里时间可以设置从0或1开始
+    result=[]
+    for pair in lines
+        for t in start:points
+            #取元组中数据
+            temp1=(pair[1],pair[2],t)
+            temp2=(pair[2],pair[1],t)
+            push!(result,temp1)
+            push!(result,temp2)
+        end
+    end
+    ijjitPairTuple=Tuple(result)
+    return ijjitPairTuple
+end
+
+function time0ijtPair(lines)
+    #已测试
+    #生成(i,j,0)，
+    result=[]
+    for pair in lines
+        temp=(pair[1],pair[2],0)
+        push!(result,temp)
+    end
+    return Tuple(result)    
+end
+
+function ij0SET(Data)
+    #已测试
+    #分别返回联络开关的(i,j,0) 以及普通线路的(i,j,0)
+    resultTie=[]
+    resultCom=[]
+    i=0
+    for j in Data[:,7] 
+        i+=1
+        if round.(Int64,j)==1
+            startNode=round.(Int64,Data[i,2])
+            endNode=round.(Int64,Data[i,3])
+            push!(resultTie,(startNode,endNode,0))
+        else
+            startNode=round.(Int64,Data[i,2])
+            endNode=round.(Int64,Data[i,3])
+            push!(resultCom,(startNode,endNode,0))
+        end
+    end
+    return Tuple(resultTie),Tuple(resultCom)
+end
+
+function listPoints(points)
+    #已测试
+    #返回一个1~points的元组
+    temp=[i for i in 1:points]
+    return Tuple(temp)
+end
+
+function time1itPair(numNode,points)
+    #已测试
+    #返回一个(i，t)组成的元组
+    result=[]
+    for i in 1:numNode
+        for t in 1:points
+            temp=(i,t)
+            push!(result,temp)
+        end
+    end
+    return Tuple(result)
+end
+
+function findijNeighborNode(i,lines,Data)
+    #已测试
+    #返回节点i与所有可用邻居组成的(i,j)元组
+    #这里的可用指：相连的线路存活为真
+    #i=节点标号 lines=(i,j)元组集合 Data=线路
+    result=[]
+    for line in lines
+        if checkLineAlive(line,Data)
+            if i in line
+                push!(result,line)
+            end
+        end
+    end
+    return Tuple(result)
+end
+
+function findijtNeighborNode(i,lines,Data,points)
+    #已测试
+    #返回节点i与所有可用邻居组成的(i,j,t)元组
+    #这里的可用指：相连的线路存活为真
+    #i=节点标号 lines=(i,j)元组集合 Data=线路
+    result=[]
+    for line in lines
+        if checkLineAlive(line,Data)
+            if i==line[1]
+                for t in 1:points
+                    temp=(line[1],line[2],t)
+                    push!(result,temp)
+                end
+            end
+        end
+    end
+    return Tuple(result)
+end
+
+function findjkForwardNeighborPair(j,lines,Data)
+    #已测试
+    #返回节点j在给定方向与下游邻居节点组成的(j,k)元组
+    #方向实际由csv文件的起讫点给出
+    result=[]
+    allPair=findijNeighborNode(j,lines,Data)
+    for pair in allPair
+        if pair[1]==j
+            push!(result,pair)
+        end
+    end
+    return Tuple(result)
+end
+
+function findijBackforwardNeighborPair(j,lines,Data)
+    #已测试
+    #返回节点j在给定方向与上游邻居节点组成的(i,j)元组
+    #方向实际由csv文件的起讫点给出
+    result=[]
+    allPair=findijNeighborNode(j,lines,Data)
+    for pair in allPair
+        if pair[2]==j
+            push!(result,pair)
+        end
+    end
+    return Tuple(result)
+end
+
