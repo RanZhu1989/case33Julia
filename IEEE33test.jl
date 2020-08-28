@@ -1,17 +1,42 @@
+#NOTE  2020.8.28 v0.5 
+#NOTE  此.jl脚本用于测试锥规划模型下配网重构单步规划和长时间尺度动态规划数据生成器的性能
+#NOTE  主要引用技术：
+#NOTE  1. 基于网络流模型的Brach Flow Model : 1989, M.E.Baran, TPS
+#NOTE  2. Brach Flow Model 相角松弛法 ：2013, M.Farivar, TPS
+#NOTE  3. Spanning Tree 拓扑约束 : 2012, J.A.Taylor, TPS
+#NOTE  4. Single Commodity Flow 拓扑约束： 2013, R.A.Jabr, TPS
+#NOTE  5. 开关操作次数约束： 2016，Mohammad, TPS
+
 import Pkg
 import MathOptInterface
 using DelimitedFiles
 using JuMP,MosekTools,Convex
-#BUG：1.多目标会输出全0解 ；2.开关操作次数的约束条件漏了
-
 
 ####################静态数据集路径###########################
+
+
 #ATTITION!现在填入的是测试用单步规划数据集
+#ATTITION!注意，原始数据需要在.jl脚本中转换为标幺值，后面计算采用标幺值计算
+
 const loadFilePath="33BUSdata//forTEST//TEST_ts_33bus_load.csv"
 const pvFilePath="33BUSdata//forTEST//TEST_ts_33bus_PV.csv"
 
 
 #######################全局常量##############################
+#基准容量
+#用于计算标幺值
+#Z_B=(U_B)^2 / S_B
+#S_B = sqrt(3) * U_B * I_B
+#r* =r/Z_B
+#x* =x/Z_B
+#p* =p/S_B
+#q* =q/S_B
+
+const base_S=100e6
+const base_V=12e3
+const base_I=(base_S)/sqrt(3)/base_V
+const base_Z=(base_I)^2/base_S
+
 #功率因数
 #TODO：计算真实的大数据序列时有用
 const powerFactor=0.95
@@ -28,22 +53,23 @@ const points=1
 #ATTITION!测试时不要运行下面这条语句
 #FIXME补全读取函数
 #const PvP=readPVPower(pvFilePath,points)
-#网损电价
-const priceGrid=0.13/1000#FIXME:网损成本需要设置，找参考文献！
+#网损电价 单位monemy / kW*h 千瓦时
+const priceGrid=0.13/(1000/base_S)#FIXME:网损成本需要设置，找参考文献！
 #操作损耗
 const costSwitch=0.5#FIXME:操作成本需要设置，找参考文献！
 #节点电压上下界,原文中电压等级为12kV
-#ATTITION!为线性化采用了电流幅值的平方作为变量！
-const lowSquVNode=Float64((12000*0.9)^2)
-const highSquVNode=Float64((12000*1.1)^2)
+#ATTITION!为线性化采用了电压幅值的平方作为变量！
+const lowSquVNode=(0.9)^2
+const highSquVNode=(1.1)^2
 #每次开关最大动作次数
 #const maxNS=2
 #无限制单步的优化用下面这个
-const maxNS=999
+const maxNS=99
 #大M 至少大于节点数即可
 const bigM=33
 ####################ATTITION!以下为形成测试数据的语句，生成.jl文件时注释掉
 #读取TESTload
+#ATTITION!.csv文件填入真实值，读取时转换为标幺值
 #已测试
 readTESTLoadData=readdlm(loadFilePath,',',header=true)
 TESTLoadData=readTESTLoadData[1]
@@ -53,8 +79,8 @@ global consumeP=zeros(33,9)
 global consumeQ=zeros(33,9)
 for iTESTLoad in 1:33
     for tTESTLoad in 1:points
-        consumeP[iTESTLoad,tTESTLoad]=TESTlistP[iTESTLoad]
-        consumeQ[iTESTLoad,tTESTLoad]=TESTlistQ[iTESTLoad]    
+        consumeP[iTESTLoad,tTESTLoad]=(TESTlistP[iTESTLoad])/base_S
+        consumeQ[iTESTLoad,tTESTLoad]=(TESTlistQ[iTESTLoad])/base_S    
     end
 end
 #读取TESTPV
@@ -65,7 +91,7 @@ global PVP=zeros(33,9)
 TESTlistPVP=TESTPVData[:,3]
 for iTESTPV in 1:33
     for tTESTLoad in 1:points
-        PVP[iTESTPV,tTESTLoad]=TESTlistPVP[iTESTPV]
+        PVP[iTESTPV,tTESTLoad]=(TESTlistPVP[iTESTPV])/base_S
     end
 end
 
@@ -144,7 +170,7 @@ function findPureLoad(Data,numNode)
     #寻找并返回纯负载节点编号的元组
     Sub=Set(findSub(Data))
     PV=Set(findPV(Data))
-    MT=Set(keys(findMT(Data)))
+    MT=Set(keys(findMT(Data,base_S)))
     #并集运算
     temp=union(Sub,PV)
     temp=union(temp,MT)
@@ -154,10 +180,11 @@ function findPureLoad(Data,numNode)
     return Tuple(Load)
 end
 
-function findMT(Data)
+function findMT(Data,base_S)
     #已测试
     #寻找并返回:
     #生成MT编号、运行成本、MT出力上下界的字典
+    #ATTITION!生成的字典将实际参数值转换为标幺值
     findNode=[]
     findLP=[]
     findHP=[]
@@ -169,11 +196,11 @@ function findMT(Data)
         i+=1
         if round.(Int64,j)==1
            push!(findNode,i)
-           push!(findLP,Data[i,5]) 
-           push!(findHP,Data[i,6]) 
-           push!(findLQ,Data[i,7]) 
-           push!(findHQ,Data[i,8]) 
-           push!(findCost,Data[i,9]) 
+           push!(findLP,(Data[i,5])/base_S) 
+           push!(findHP,(Data[i,6])/base_S) 
+           push!(findLQ,(Data[i,7])/base_S) 
+           push!(findHQ,(Data[i,8])/base_S) 
+           push!(findCost,(Data[i,9])/(1000/base_S)) 
         end
     end
     TfindNode=Tuple(findNode)
@@ -356,9 +383,9 @@ function dpSolverReconfiguraiton33Bus()
     listLine=round.(Int64,lineData[:,1])
     startNode=round.(Int64,lineData[:,2])
     endNode=round.(Int64,lineData[:,3])
-    lineResistance=lineData[:,4]
-    lineImpedance=lineData[:,5]
-    lineSquCurrentMAX=lineData[:,6]
+    lineResistance=(lineData[:,4])/base_Z
+    lineImpedance=(lineData[:,5])/base_Z
+    lineSquCurrentMAX=(lineData[:,6])/base_I
     #读取联络开关位置，备用
     listFlagTieSwitch=lineData[:,7]
     #生成线路相关数据结构
@@ -400,7 +427,7 @@ function dpSolverReconfiguraiton33Bus()
     listPV=findPV(nodeData)
     #找出并创建MT节点信息的字典
     #字典说明：键值=节点编号；值=(有功下界，有功上界，无功下界，无功上界，成本C)
-    mtInfDict=findMT(nodeData)
+    mtInfDict=findMT(nodeData,base_S)
     #找出MT节点元组
     listMT=Tuple(Set(keys(mtInfDict)))
     #找出普通负载节点元组
@@ -413,42 +440,39 @@ function dpSolverReconfiguraiton33Bus()
    
     #表示线路通断的alpha布尔矩阵
     #ATTITION!这里从时间0开始，代表初始状态
-    @variable(bus33Reconfiguration,alpha[ijt in time0NodePair],Bin)
+    @variable(bus33Reconfiguration,alpha[ijt in time0NodePair],Bin,base_name="线路通断Alpha")
 
     #用于构建辐射状拓扑约束的中ST约束辅助变量b_{ijt}
     #ATTITION!这里从时间1开始
     #ATTITION!bAuxiliary包含(i,j)和对应元素交换后的(j,i)
-    @variable(bus33Reconfiguration,0<=bAuxiliary[ijt in ijtjit1Pair]<=1)
+    @variable(bus33Reconfiguration,0<=bAuxiliary[ijt in ijtjit1Pair]<=1,base_name="辅助变量b")
 
     #用于构建辐射状拓扑约束的中SCF约束虚拟首端网络流变量apparentFictitiousFlow_{ijt}
     #ATTITION!这里从时间1开始
-    @variable(bus33Reconfiguration,apparentFictitiousFlow[ijt in ijtjit1Pair])
+    @variable(bus33Reconfiguration,apparentFictitiousFlow[ijt in ijtjit1Pair],base_name="虚拟网络流F")
 
     #用于构建辐射状拓扑约束的中SCF约束虚拟负载变量fictitiousLoad_{ijt}
     #ATTITION!这里从时间1开始
-    @variable(bus33Reconfiguration,fictitiousLoad[it in itPair]==1)
+    @variable(bus33Reconfiguration,fictitiousLoad[it in itPair]==1,base_name="虚拟负载D")
 
     #用于构建开关次数约束的辅助变量lambda_{ijt}
     #ATTITION!这里从时间1开始
-    @variable(bus33Reconfiguration,lambda[ijt in time1NodePair],Bin)
-
-    #储存开关操作次数的辅助变量numSwitchOperation_{t}
-    @variable(bus33Reconfiguration,numSwitchOperation[t in listPoints(points)]<=maxNS)
+    @variable(bus33Reconfiguration,lambda[ijt in time1NodePair],Bin,base_name="开关变位辅助变量lambda")
 
     #注入有功\无功功率 P Q _{i t}
-    @variable(bus33Reconfiguration,injectionActivePower[it in itPair])
-    @variable(bus33Reconfiguration,injectionReactivePower[it in itPair])
+    @variable(bus33Reconfiguration,injectionActivePower[it in itPair],base_name="注入有功")
+    @variable(bus33Reconfiguration,injectionReactivePower[it in itPair],base_name="注入无功")
 
     #首端有功\无功功率 P Q _{i j t}
-    @variable(bus33Reconfiguration,apparentActivePower[ijt in time1NodePair])
-    @variable(bus33Reconfiguration,apparentReactivePower[ijt in time1NodePair])
+    @variable(bus33Reconfiguration,apparentActivePower[ijt in time1NodePair],base_name="首端有功")
+    @variable(bus33Reconfiguration,apparentReactivePower[ijt in time1NodePair],base_name="首端无功")
 
     #ATTITION! l_{i j t} 支路电流平方
     #每条支路最大载流量需要查lineData
-    @variable(bus33Reconfiguration,lineSquCurrent[ijt in time1NodePair])
+    @variable(bus33Reconfiguration,lineSquCurrent[ijt in time1NodePair],base_name="线路电流幅值平方")
 
     #ATTITION!节点电压平方幅值 V_{i t}
-    @variable(bus33Reconfiguration,lowSquVNode<=nodeSquVoltage[it in itPair]<=highSquVNode)
+    @variable(bus33Reconfiguration,lowSquVNode<=nodeSquVoltage[it in itPair]<=highSquVNode,base_name="节点电压幅值平方")
 
     #######################补充的变量取值范围#########################
 
@@ -596,11 +620,18 @@ function dpSolverReconfiguraiton33Bus()
 
     #开关操作次数约束
     #Reference: Mohammad 2016, TPS
-
-
-
-
-
+    for line in lines
+        for t in 1:points
+            @constraint(bus33Reconfiguration,lambda[(line[1],line[2],t)]>=(alpha[(line[1],line[2],t)]-alpha[(line[1],line[2],t-1)]))
+            @constraint(bus33Reconfiguration,lambda[(line[1],line[2],t)]>=(alpha[(line[1],line[2],t-1)]-alpha[(line[1],line[2],t)]))
+        end
+    end
+    for node in nodes
+        for t in 1:points
+            @constraint(bus33Reconfiguration,sum(lambda[(i,j,t)] for (i,j) in findjkForwardNeighborPair(node,lines,lineData))<=maxNS)  
+        end
+    end
+    
     ###################目标函数######################################
     #ATTITION! 负载未定义 
     #编译通过
@@ -608,20 +639,79 @@ function dpSolverReconfiguraiton33Bus()
     +consumeP[mtNode,t]) for mtNode in listMT)
     +sum(priceGrid*lineSquCurrent[(line[1],line[2],t)]*rLineDict[line] for line in lines)
     +sum(priceGrid*injectionActivePower[(subNode,t)] for subNode in listSub)
-    +sum(costSwitch*numSwitchOperation[t])) for t in 1:points))
+    +sum(costSwitch*lambda[(line[1],line[2],t)] for line in lines)) for t in 1:points))
     #@objective(bus33Reconfiguration,Min,priceGrid*injectionActivePower[(listSub[1],1)])
     
     #运行
     optimize!(bus33Reconfiguration)
     state=termination_status(bus33Reconfiguration)
-    println(bus33Reconfiguration)
-    println("结束，优化最终状态标志位为：$state")
-    println(objective_value(bus33Reconfiguration))
-    println(value.(alpha))
-    println(sqrt.(value.(nodeSquVoltage)))
-    println(value.(injectionActivePower))
-    println(value.(injectionReactivePower))
-    #println(value.(numSwitchOperation))
+    #println(bus33Reconfiguration)
+    println("!!!结束，优化最终状态标志位为：$state")
+    println("!!!最优值:",objective_value(bus33Reconfiguration))
+    #输出初始开关状态
+    println("!!!初始各线路开关状态为: ")
+    for line in lines
+        if checkLineAlive(line,lineData)
+            println("****线路 $line 的初始状态为：",value(alpha[(line[1],line[2],0)]))
+        end
+    end
+    #输出各时刻各开关状态
+    println("!!!以下是各规划时刻各线路开关状态：")
+    for time in 1:points
+        for line in lines
+            if checkLineAlive(line,lineData)
+                println("****线路 $line 在 $time 规划时刻的状态为：",value(alpha[(line[1],line[2],time)]))
+            end
+        end        
+    end
+    println("!!!以下是各规划时刻发生动作的线路开关统计：")
+    for time in 1:points
+        for line in lines
+            if checkLineAlive(line,lineData)
+                if value(lambda[(line[1],line[2],time)])==1
+                    println("****线路 $line 上的断路器在 $time 规划时刻进行了1次操作")
+                end
+            end
+        end
+    end
+    println("!!!以下是各规划时刻各节点电压幅值的标幺值：")
+    for time in 1:points
+        for node in nodes
+            println("****节点 $node 的电压幅值为：",sqrt(value(nodeSquVoltage[(node,time)])))
+        end
+    end
+    println("!!!以下是各规划时刻各节注入有功功率的标幺值：")
+    for time in 1:points
+        for node in nodes
+            println("****节点 $node 的注入有功功率为：",value(injectionActivePower[(node,time)]))
+        end
+    end
+    println("!!!以下是各规划时刻各节注入无功功率的标幺值：")
+    for time in 1:points
+        for node in nodes
+            println("****节点 $node 的注入无功功率为：",value(injectionReactivePower[(node,time)]))
+        end
+    end
+    println("!!!以下是各规划时刻各线路通过电流的标幺值：")
+    for time in 1:points
+        for line in lines
+            if checkLineAlive(line,lineData)
+                #开方
+                println("****线路 $line 上流过的电流大小为：",sqrt(value(lineSquCurrent[(line[1],line[2],time)])))
+            end
+        end
+    end
+    println("!!!以下是各规划时刻网损统计情况：")
+    for time in 1:points 
+        loss_T_System=0
+        for line in lines
+            if checkLineAlive(line,lineData)
+                println("****线路 $line 在 $time 规划时刻的网损大小为：",rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)]))
+                loss_T_System+=rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)])
+            end
+        println("****在 $time 规划时刻的总体网损大小为：",loss_T_System)    
+        end
+    end
 end
 
 #运行主函数
