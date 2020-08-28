@@ -20,6 +20,8 @@ using JuMP,MosekTools,Convex
 
 const loadFilePath="33BUSdata//forTEST//TEST_ts_33bus_load.csv"
 const pvFilePath="33BUSdata//forTEST//TEST_ts_33bus_PV.csv"
+const paraLinePath="33BUSdata//forTEST//TEST_para_33bus_line.csv"
+const paraNodePath="33BUSdata//forTEST//TEST_para_33bus_node.csv"
 
 
 #######################全局常量##############################
@@ -56,14 +58,14 @@ const points=1
 #网损电价 单位monemy / kW*h 千瓦时
 const priceGrid=0.13/(1000/base_S)#FIXME:网损成本需要设置，找参考文献！
 #操作损耗
-const costSwitch=0.5#FIXME:操作成本需要设置，找参考文献！
+const costSwitch=0.1#FIXME:操作成本需要设置，找参考文献！
 #节点电压上下界,原文中电压等级为12kV
 #ATTITION!为线性化采用了电压幅值的平方作为变量！
 const lowSquVNode=(0.9)^2
 const highSquVNode=(1.1)^2
-#每次开关最大动作次数
+#ATTITION!每次开关最大动作次数 动态规划时使用这一条语句
 #const maxNS=2
-#无限制单步的优化用下面这个
+#ATTITION!无限制单步的优化用下面这条语句
 const maxNS=99
 #大M 至少大于节点数即可
 const bigM=33
@@ -109,6 +111,21 @@ end =#
     # 在输入时间尺度以及功率因数下返回PV有功输出(假设该PV采用功率因数控制，不发无功).
     return P
 end =#
+
+function linesijTOlinesIJJI(lines,lineData)
+    #创建一个将(ij)并(ji)的元组集合
+    result=[]
+    for line in lines
+        if checkLineAlive(line,lineData)
+            #取元组中数据
+            temp1=(line[1],line[2])
+            temp2=(line[2],line[1])
+            push!(result,temp1)
+            push!(result,temp2)
+        end    
+    end
+    return Tuple(result)
+end
 
 function checkNodeAlive(i,Data)
     #已测试
@@ -227,7 +244,7 @@ end
 
 function ijjiTimePair(lines,points,start)
     #已测试
-    #将(i,j)组成的元组转换为(i,j,t),(j,t,t)组成的大型元组
+    #将(i,j)组成的元组转换为(i,j,t),(j,i,t)组成的大型元组
     #ATTITION!这里时间可以设置从0或1开始
     result=[]
     for pair in lines
@@ -311,26 +328,27 @@ function findijNeighborNode(i,lines,Data)
     return Tuple(result)
 end
 
-function rootFreeFindijtNeighborNode(i,lines,Data,points)
+function rootFreeFindijtNeighborNode(i,lines,points)
     #已测试
+    #ATTITION!这是针对(i,j)U(j,i)的一个“向后"的搜索
+    #NOTE 某些情况下可能存在没有邻居的情况
     #返回节点i与所有可用邻居组成的(i,j,t)元组
     #这里的可用指：相连的线路存活为真
-    #i=节点标号 lines=(i,j)元组集合 Data=线路
+    #i=节点标号 lines=(i,j)元组集合 Data=读取的线路数据
     result=[]
     for line in lines
-        if checkLineAlive(line,Data)
-            if i in line
-                for t in 1:points
-                    temp=(line[1],line[2],t)
-                    push!(result,temp)
-                end
+        if i==line[1]
+            for t in 1:points
+                temp=(line[1],line[2],t)
+                push!(result,temp)
             end
         end
     end
-    if length(result)!=0
+    if result!=[]
         return Tuple(result)
+    else
+        return ()
     end
-    
 end
 
 function findjkForwardNeighborPair(j,lines,Data)
@@ -373,9 +391,6 @@ function dpSolverReconfiguraiton33Bus()
     #paraNodePath="33BUSdata//para_33bus_node.csv" 
 
     #ATTITION!仅供测试用！形成脚本时注意注释掉
-    paraLinePath="33BUSdata//forTEST//TEST_para_33bus_line.csv"
-    paraNodePath="33BUSdata//forTEST//TEST_para_33bus_node.csv"
-
     #读取线路参数文件
     #reference:  M.E.Baran,1989,TPS
     readLineData=readdlm(paraLinePath,',',header=true)
@@ -403,6 +418,8 @@ function dpSolverReconfiguraiton33Bus()
     lines=Tuple((startNode[i],endNode[i]) for i in 1:numLine)
     #标准情况下逆序的线路(j,i)元组
     reverseLines=Tuple((endNode[i],startNode[i]) for i in 1:numLine)
+    #考虑线路生存状态的(i,j)U(j,i)
+    ijjiLines=linesijTOlinesIJJI(lines,lineData)
     #线路电阻值与阻抗的字典
     rLineDict=Dict(lines .=>lineResistance)
     xLineDict=Dict(lines .=>lineImpedance)
@@ -417,7 +434,7 @@ function dpSolverReconfiguraiton33Bus()
     ij0Pair=time0ijtPair(lines)
     #联络开关(i,j,0) 以及普通支路(i,j,0)
     ij0TiePair,ij0ComPair=ij0SET(lineData)
-    
+
     #读取节点参数文件
     readNodeData=readdlm(paraNodePath,',',header=true)
     nodeData=readNodeData[1]
@@ -504,20 +521,26 @@ function dpSolverReconfiguraiton33Bus()
         end
     end       
     #对于含PV的节点
-    for i in listPV
-        for t in 1:points
-            @constraint(bus33Reconfiguration,injectionActivePower[(i,t)]==PVP[i,t]-consumeP[i,t])
-            @constraint(bus33Reconfiguration,injectionReactivePower[(i,t)]==-consumeQ[i,t])
+    if listPV!=()
+        for i in listPV
+            for t in 1:points
+                @constraint(bus33Reconfiguration,injectionActivePower[(i,t)]==PVP[i,t]-consumeP[i,t])
+                @constraint(bus33Reconfiguration,injectionReactivePower[(i,t)]==-consumeQ[i,t])
+            end
         end
     end
+    
     #对于含MT的节点
-    for i in listMT
-        for t in 1:points
-            mtInf=mtInfDict[i]
-            @constraint(bus33Reconfiguration,mtInf[1]<=(injectionActivePower[(i,t)]+consumeP[i,t])<=mtInf[2])
-            @constraint(bus33Reconfiguration,mtInf[3]<=(injectionReactivePower[(i,t)]+consumeQ[i,t])<=mtInf[4])
+    if listMT!=()
+        for i in listMT
+            for t in 1:points
+                mtInf=mtInfDict[i]
+                @constraint(bus33Reconfiguration,mtInf[1]<=(injectionActivePower[(i,t)]+consumeP[i,t])<=mtInf[2])
+                @constraint(bus33Reconfiguration,mtInf[3]<=(injectionReactivePower[(i,t)]+consumeQ[i,t])<=mtInf[4])
+            end
         end
     end
+    
 
     ########约束条件########################
     #网络流模型的功率平衡方程
@@ -544,15 +567,13 @@ function dpSolverReconfiguraiton33Bus()
     for line in lines
         for t in 1:points
             if checkLineAlive(line,lineData)
-                iVStart=line[1]
-                jVEnd=line[2]
-                @constraint(bus33Reconfiguration,(nodeSquVoltage[(iVStart,t)]-nodeSquVoltage[(jVEnd,t)])>=(-bigM*(1-alpha[(iVStart,jVEnd,t)])
-                +2*(rLineDict[line]*apparentActivePower[(iVStart,jVEnd,t)]+xLineDict[line]*apparentReactivePower[(iVStart,jVEnd,t)])
-                -((rLineDict[line])^2+(xLineDict[line]^2))*lineSquCurrent[(iVStart,jVEnd,t)]))
+                @constraint(bus33Reconfiguration,(nodeSquVoltage[(line[1],t)]-nodeSquVoltage[(line[2],t)])>=(-bigM*(1-alpha[(line[1],line[2],t)])
+                +2*(rLineDict[line]*apparentActivePower[(line[1],line[2],t)]+xLineDict[line]*apparentReactivePower[(line[1],line[2],t)])
+                -((rLineDict[line])^2+(xLineDict[line]^2))*lineSquCurrent[(line[1],line[2],t)]))
 
-                @constraint(bus33Reconfiguration,(nodeSquVoltage[(iVStart,t)]-nodeSquVoltage[(jVEnd,t)])<=(bigM*(1-alpha[(iVStart,jVEnd,t)])
-                +2*(rLineDict[line]*apparentActivePower[(iVStart,jVEnd,t)]+xLineDict[line]*apparentReactivePower[(iVStart,jVEnd,t)])
-                -((rLineDict[line])^2+(xLineDict[line]^2))*lineSquCurrent[(iVStart,jVEnd,t)]))
+                @constraint(bus33Reconfiguration,(nodeSquVoltage[(line[1],t)]-nodeSquVoltage[(line[2],t)])<=(bigM*(1-alpha[(line[1],line[2],t)])
+                +2*(rLineDict[line]*apparentActivePower[(line[1],line[2],t)]+xLineDict[line]*apparentReactivePower[(line[1],line[2],t)])
+                -((rLineDict[line])^2+(xLineDict[line]^2))*lineSquCurrent[(line[1],line[2],t)]))
             end
         end
     end
@@ -562,11 +583,9 @@ function dpSolverReconfiguraiton33Bus()
     #编译通过
     for line in lines
         if checkLineAlive(line,lineData)
-            iRSOCStart=line[1]
-            jRSOCEnd=line[2]
             for t in 1:points
-                @constraint(bus33Reconfiguration,[lineSquCurrent[(iRSOCStart,jRSOCEnd,t)],0.5*nodeSquVoltage[(iRSOCStart,t)],
-                apparentActivePower[(iRSOCStart,jRSOCEnd,t)],apparentReactivePower[(iRSOCStart,jRSOCEnd,t)]] in RotatedSecondOrderCone())
+                @constraint(bus33Reconfiguration,[lineSquCurrent[(line[1],line[2],t)],0.5*nodeSquVoltage[(line[1],t)],
+                apparentActivePower[(line[1],line[2],t)],apparentReactivePower[(line[1],line[2],t)]] in RotatedSecondOrderCone())
             end
         end
     end
@@ -579,21 +598,19 @@ function dpSolverReconfiguraiton33Bus()
     #编译通过
     for line in lines
         if checkLineAlive(line,lineData)
-            iSTStart=line[1]
-            jSTEnd=line[2]
             for t in 1:points
-                @constraint(bus33Reconfiguration,(bAuxiliary[(iSTStart,jSTEnd,t)]+bAuxiliary[(jSTEnd,iSTStart,t)])==alpha[(iSTStart,jSTEnd,t)])
+                @constraint(bus33Reconfiguration,(bAuxiliary[(line[1],line[2],t)]+bAuxiliary[(line[2],line[1],t)])==alpha[(line[1],line[2],t)])
             end
         end
     end
     for node in rootFreeNodes
         for t in 1:points   
             #在寻找邻居节点时已自带线路存活检测功能
-            @constraint(bus33Reconfiguration,sum(bAuxiliary[n] for n in rootFreeFindijtNeighborNode(node,lines,lineData,points))==1)
+            @constraint(bus33Reconfiguration,sum(bAuxiliary[ijt] for ijt in rootFreeFindijtNeighborNode(node,ijjiLines,points))==1)
         end
     end
         #TODO：这里假设变电站就是唯一的root节点了
-    subNeiijtPair=rootFreeFindijtNeighborNode(1,lines,lineData,points)
+    subNeiijtPair=rootFreeFindijtNeighborNode(1,ijjiLines,points)
     for ijt in subNeiijtPair
         @constraint(bus33Reconfiguration,bAuxiliary[ijt]==0)
     end
@@ -645,14 +662,13 @@ function dpSolverReconfiguraiton33Bus()
     #运行
     optimize!(bus33Reconfiguration)
     state=termination_status(bus33Reconfiguration)
-    #println(bus33Reconfiguration)
     println("!!!结束，优化最终状态标志位为：$state")
     println("!!!最优值:",objective_value(bus33Reconfiguration))
     #输出初始开关状态
     println("!!!初始各线路开关状态为: ")
     for line in lines
         if checkLineAlive(line,lineData)
-            println("****线路 $line 的初始状态为：",value(alpha[(line[1],line[2],0)]))
+            println("****线路 $line 的初始状态为：",Int64(value(alpha[(line[1],line[2],0)])))
         end
     end
     #输出各时刻各开关状态
@@ -660,7 +676,7 @@ function dpSolverReconfiguraiton33Bus()
     for time in 1:points
         for line in lines
             if checkLineAlive(line,lineData)
-                println("****线路 $line 在 $time 规划时刻的状态为：",value(alpha[(line[1],line[2],time)]))
+                println("****线路 $line 在 $time 规划时刻的状态为：",Int64(value(alpha[(line[1],line[2],time)])))
             end
         end        
     end
@@ -677,41 +693,57 @@ function dpSolverReconfiguraiton33Bus()
     println("!!!以下是各规划时刻各节点电压幅值的标幺值：")
     for time in 1:points
         for node in nodes
-            println("****节点 $node 的电压幅值为：",sqrt(value(nodeSquVoltage[(node,time)])))
+            println("****节点 $node 的电压幅值(pu.)为：",sqrt(value(nodeSquVoltage[(node,time)])))
         end
     end
-    println("!!!以下是各规划时刻各节注入有功功率的标幺值：")
+    println("!!!以下是各规划时刻各节注入有功功率的真实值：")
     for time in 1:points
         for node in nodes
-            println("****节点 $node 的注入有功功率为：",value(injectionActivePower[(node,time)]))
+            println("****节点 $node 的注入有功功率(kW)为：",base_S/1000*value(injectionActivePower[(node,time)]))
         end
     end
-    println("!!!以下是各规划时刻各节注入无功功率的标幺值：")
+    println("!!!以下是各规划时刻各节注入无功功率的真实值：")
     for time in 1:points
         for node in nodes
-            println("****节点 $node 的注入无功功率为：",value(injectionReactivePower[(node,time)]))
+            println("****节点 $node 的注入无功功率(kVar)为：",base_S/1000*value(injectionReactivePower[(node,time)]))
         end
     end
-    println("!!!以下是各规划时刻各线路通过电流的标幺值：")
+    println("!!!以下是各规划时刻各线路通过电流的真实值：")
     for time in 1:points
         for line in lines
             if checkLineAlive(line,lineData)
                 #开方
-                println("****线路 $line 上流过的电流大小为：",sqrt(value(lineSquCurrent[(line[1],line[2],time)])))
+                println("****线路 $line 上流过的电流大小(A)为：",base_I*sqrt(value(lineSquCurrent[(line[1],line[2],time)])))
             end
         end
     end
-    println("!!!以下是各规划时刻网损统计情况：")
+    println("!!!以下是各规划时刻网损真实值统计情况：")
     for time in 1:points 
         loss_T_System=0
         for line in lines
             if checkLineAlive(line,lineData)
-                println("****线路 $line 在 $time 规划时刻的网损大小为：",rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)]))
-                loss_T_System+=rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)])
+                println("****线路 $line 在 $time 规划时刻的网损大小(kW)为：",base_S/1000*rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)]))
+                loss_T_System+=base_S*rLineDict[line]/1000*value(lineSquCurrent[(line[1],line[2],time)])
             end
-        println("****在 $time 规划时刻的总体网损大小为：",loss_T_System)    
+        end
+        println("****在 $time 规划时刻的总体网损大小(kW)为：",loss_T_System)    
+    end
+    if listMT!=()
+        println("!!!以下是各MT在各规划时刻发出功率真实值统计情况：")
+        for time in 1:points
+            for mtNode in listMT
+                if checkNodeAlive(mtNode,nodeData)
+                    println("****含MT的节点 $mtNode 在 $time 规划时刻的发出有功大小(kW)为：",base_S/1000*value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time])
+                    println("****含MT的节点 $mtNode 在 $time 规划时刻的发出无功大小(kVar)为：",base_S/1000*value(injectionReactivePower[(mtNode,time)])+consumeQ[mtNode,time])
+                end
+            end 
         end
     end
+    println("!!!####测试用：显示b的情况：")
+    for pair in ijtjit1Pair 
+        println("****辅助变量b在 $pair 上的值为：" ,value(bAuxiliary[pair]))
+    end
+    #println(bus33Reconfiguration)
 end
 
 #运行主函数
