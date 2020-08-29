@@ -23,6 +23,18 @@ const pvFilePath="33BUSdata//forTEST//TEST_ts_33bus_PV.csv"
 const paraLinePath="33BUSdata//forTEST//TEST_para_33bus_line.csv"
 const paraNodePath="33BUSdata//forTEST//TEST_para_33bus_node.csv"
 
+#####################报告文件路径##############################
+#ATTITION! 必须手动创建report目录  Julia下的文件操作尚不完善
+#ATTITION! mkdir若目录已存在则会报错
+#mkdir(".//report//")
+const reportPath=".//report//"
+const resultPath="result重构.txt"
+const resultSwitchOpearingPath=reportPath * "开关动作_" * resultPath
+const resultPowerMTPath=reportPath *"MT出力_kW_" * resultPath
+const resultNodeVoltagePath=reportPath * "节点电压_pu._" * resultPath
+const resultLineCurrentPath=reportPath * "线路电流_A_" * resultPath
+const resultLossPath=reportPath * "线路网损_" * resultPath
+const resultPowerSubstationPath=reportPath * "变电站主变出线出力_" *resultPath
 
 #######################全局常量##############################
 #基准容量
@@ -56,9 +68,11 @@ const points=1
 #FIXME补全读取函数
 #const PvP=readPVPower(pvFilePath,points)
 #网损电价 单位monemy / kW*h 千瓦时
-const priceGrid=0.13/(1000/base_S)#FIXME:网损成本需要设置，找参考文献！
+const priceLoss=0.5/(1000/base_S)#FIXME:网损成本需要设置，找参考文献！
+#购电电价 单位monemy / kW*h 千瓦时
+const priceGrid=0.6/(1000/base_S)#FIXME:购电电价需要设置，找参考文献！
 #操作损耗
-const costSwitch=0.1#FIXME:操作成本需要设置，找参考文献！
+const costSwitch=0.5#FIXME:操作成本需要设置，找参考文献！
 #节点电压上下界,原文中电压等级为12kV
 #ATTITION!为线性化采用了电压幅值的平方作为变量！
 const lowSquVNode=(0.9)^2
@@ -66,6 +80,7 @@ const highSquVNode=(1.1)^2
 #ATTITION!每次开关最大动作次数 动态规划时使用这一条语句
 #const maxNS=2
 #ATTITION!无限制单步的优化用下面这条语句
+#NOTE 设置为0 csv文件中修改上下限约束 可以作为潮流计算用
 const maxNS=99
 #大M 至少大于节点数即可
 const bigM=33
@@ -111,6 +126,17 @@ end =#
     # 在输入时间尺度以及功率因数下返回PV有功输出(假设该PV采用功率因数控制，不发无功).
     return P
 end =#
+
+#将二维数组打印到文件
+function array2dPrintToFile(printArray,fileOpened)
+    for i in 1:(size(printArray))[1]
+        for j in 1:(size(printArray))[2]
+            print(fileOpened,printArray[i,j])
+            print(fileOpened," ")
+        end
+        println(fileOpened)
+    end
+end
 
 function linesijTOlinesIJJI(lines,lineData)
     #创建一个将(ij)并(ji)的元组集合
@@ -462,7 +488,7 @@ function dpSolverReconfiguraiton33Bus()
     #用于构建辐射状拓扑约束的中ST约束辅助变量b_{ijt}
     #ATTITION!这里从时间1开始
     #ATTITION!bAuxiliary包含(i,j)和对应元素交换后的(j,i)
-    @variable(bus33Reconfiguration,0<=bAuxiliary[ijt in ijtjit1Pair]<=1,base_name="辅助变量b")
+    @variable(bus33Reconfiguration,bAuxiliary[ijt in ijtjit1Pair],Bin,base_name="辅助变量b")
 
     #用于构建辐射状拓扑约束的中SCF约束虚拟首端网络流变量apparentFictitiousFlow_{ijt}
     #ATTITION!这里从时间1开始
@@ -512,8 +538,7 @@ function dpSolverReconfiguraiton33Bus()
     #注意这里需要分以下情况：
     #1.纯负载节点或纯变电站节点;2.含PV的节点;3.含MT的节点
     #对于一般节点 
-    #ATTITION!在PV Load数据读取函数编写完成前不要运行此部分！！
-    #编译通过 测试时可用
+    #编译通过
     for i in listPureLoad
         for t in 1:points
             @constraint(bus33Reconfiguration,injectionActivePower[(i,t)]==-consumeP[i,t])
@@ -637,6 +662,7 @@ function dpSolverReconfiguraiton33Bus()
 
     #开关操作次数约束
     #Reference: Mohammad 2016, TPS
+    #编译通过
     for line in lines
         for t in 1:points
             @constraint(bus33Reconfiguration,lambda[(line[1],line[2],t)]>=(alpha[(line[1],line[2],t)]-alpha[(line[1],line[2],t-1)]))
@@ -654,95 +680,222 @@ function dpSolverReconfiguraiton33Bus()
     #编译通过
     @objective(bus33Reconfiguration,Min,sum((sum((mtInfDict[mtNode][5])*(injectionActivePower[(mtNode,t)]
     +consumeP[mtNode,t]) for mtNode in listMT)
-    +sum(priceGrid*lineSquCurrent[(line[1],line[2],t)]*rLineDict[line] for line in lines)
+    +sum(priceLoss*lineSquCurrent[(line[1],line[2],t)]*rLineDict[line] for line in lines)
     +sum(priceGrid*injectionActivePower[(subNode,t)] for subNode in listSub)
     +sum(costSwitch*lambda[(line[1],line[2],t)] for line in lines)) for t in 1:points))
-    #@objective(bus33Reconfiguration,Min,priceGrid*injectionActivePower[(listSub[1],1)])
+    
     
     #运行
     optimize!(bus33Reconfiguration)
+
+    #结果分析
+    #NOTE 获取优化器结果标志位
     state=termination_status(bus33Reconfiguration)
+    #NOTE 总报告
+    fileResult=open(resultPath,"w")
+    #NOTE 开关动作时间序列
+    switchOperationFileResult=open(resultSwitchOpearingPath,"w")
+    #NOTE MT出力调节时间序列
+    powerMTFileResult=open(resultPowerMTPath,"w")
+    #NOTE 节点电压幅值时间序列
+    nodeVoltageFileResult=open(resultNodeVoltagePath,"w")
+    #NOTE 线路电流时间序列
+    lineCurrentFileResult=open(resultLineCurrentPath,"w")
+    #NOTE 线路网损时间序列
+    lineLossFileResult=open(resultLossPath,"w")
+    #NOTE 变电站主变出线出力时间序列
+    powerSubstationFileResult=open(resultPowerSubstationPath,"w")
+
     println("!!!结束，优化最终状态标志位为：$state")
+    println(fileResult,"!!!结束，优化最终状态标志位为：$state")
     println("!!!最优值:",objective_value(bus33Reconfiguration))
+    println(fileResult,"!!!最优值:",objective_value(bus33Reconfiguration))
+
     #输出初始开关状态
     println("!!!初始各线路开关状态为: ")
+    println(fileResult,"!!!初始各线路开关状态为: ")
     for line in lines
         if checkLineAlive(line,lineData)
             println("****线路 $line 的初始状态为：",Int64(value(alpha[(line[1],line[2],0)])))
+            println(fileResult,"****线路 $line 的初始状态为：",Int64(value(alpha[(line[1],line[2],0)])))
         end
     end
+
     #输出各时刻各开关状态
+    switchOperationPrintToFile=Array{Int64}(undef,length(lines),points)
     println("!!!以下是各规划时刻各线路开关状态：")
+    println(fileResult,"!!!以下是各规划时刻各线路开关状态：")
     for time in 1:points
+        n=0
         for line in lines
+            n+=1
             if checkLineAlive(line,lineData)
+                switchOperationPrintToFile[n,time]=Int64(value(alpha[(line[1],line[2],time)]))
                 println("****线路 $line 在 $time 规划时刻的状态为：",Int64(value(alpha[(line[1],line[2],time)])))
+                println(fileResult,"****线路 $line 在 $time 规划时刻的状态为：",Int64(value(alpha[(line[1],line[2],time)])))
+            else
+                #ATTITION! 若线路当前不可用，状态置为-999
+                switchOperationPrintToFile[n,time]=-999
             end
         end        
     end
+    array2dPrintToFile(switchOperationPrintToFile,switchOperationFileResult)
+    #println(switchOperationFileResult,switchOperationPrintToFile)
     println("!!!以下是各规划时刻发生动作的线路开关统计：")
+    println(fileResult,"!!!以下是各规划时刻发生动作的线路开关统计：")
     for time in 1:points
+        ns=0
         for line in lines
             if checkLineAlive(line,lineData)
                 if value(lambda[(line[1],line[2],time)])==1
+                    ns+=1
                     println("****线路 $line 上的断路器在 $time 规划时刻进行了1次操作")
+                    println(fileResult,"****线路 $line 上的断路器在 $time 规划时刻进行了1次操作")
                 end
             end
         end
-    end
-    println("!!!以下是各规划时刻各节点电压幅值的标幺值：")
-    for time in 1:points
-        for node in nodes
-            println("****节点 $node 的电压幅值(pu.)为：",sqrt(value(nodeSquVoltage[(node,time)])))
+        if ns==0
+            println("****警告！配电网在 $time 规划时刻没有进行任何开关操作")
         end
     end
+
+    #输出各节点电压幅值
+    nodeVoltagePrintToFile=Array{Float64}(undef,length(nodes),points)
+    println("!!!以下是各规划时刻各节点电压幅值的标幺值：")
+    println(fileResult,"!!!以下是各规划时刻各节点电压幅值的标幺值：")
+    for time in 1:points
+        for node in nodes
+            nodeVoltagePrintToFile[node,time]=sqrt(value(nodeSquVoltage[(node,time)]))
+            println("****节点 $node 的电压幅值(pu.)为：",sqrt(value(nodeSquVoltage[(node,time)])))
+            println(fileResult,"****节点 $node 的电压幅值(pu.)为：",sqrt(value(nodeSquVoltage[(node,time)])))
+        end
+    end
+    array2dPrintToFile(nodeVoltagePrintToFile,nodeVoltageFileResult)
+    #println(nodeVoltageFileResult,nodeVoltagePrintToFile)
+
+    #输出各节点注入功率
     println("!!!以下是各规划时刻各节注入有功功率的真实值：")
+    println(fileResult,"!!!以下是各规划时刻各节注入有功功率的真实值：")
     for time in 1:points
         for node in nodes
             println("****节点 $node 的注入有功功率(kW)为：",base_S/1000*value(injectionActivePower[(node,time)]))
+            println(fileResult,"****节点 $node 的注入有功功率(kW)为：",base_S/1000*value(injectionActivePower[(node,time)]))
         end
     end
     println("!!!以下是各规划时刻各节注入无功功率的真实值：")
+    println(fileResult,"!!!以下是各规划时刻各节注入无功功率的真实值：")
     for time in 1:points
         for node in nodes
             println("****节点 $node 的注入无功功率(kVar)为：",base_S/1000*value(injectionReactivePower[(node,time)]))
+            println(fileResult,"****节点 $node 的注入无功功率(kVar)为：",base_S/1000*value(injectionReactivePower[(node,time)]))
         end
     end
+
+    #输出各线路电流幅值
+    lineCurrentPrintToFile=Array{Float64}(undef,length(lines),points)
     println("!!!以下是各规划时刻各线路通过电流的真实值：")
+    println(fileResult,"!!!以下是各规划时刻各线路通过电流的真实值：")
     for time in 1:points
+        i=0
         for line in lines
+            i+=1
             if checkLineAlive(line,lineData)
                 #开方
+                lineCurrentPrintToFile[i,time]=base_I*sqrt(value(lineSquCurrent[(line[1],line[2],time)]))    
                 println("****线路 $line 上流过的电流大小(A)为：",base_I*sqrt(value(lineSquCurrent[(line[1],line[2],time)])))
+                println(fileResult,"****线路 $line 上流过的电流大小(A)为：",base_I*sqrt(value(lineSquCurrent[(line[1],line[2],time)])))
+            else
+                #ATTITION! 不可用的线路电流置为0
+                lineCurrentPrintToFile[i,time]=0
             end
         end
     end
+    array2dPrintToFile(lineCurrentPrintToFile,lineCurrentFileResult)
+    #println(lineCurrentFileResult,lineCurrentPrintToFile)
+
+    lineLossPrintToFile=Array{Float64}(undef,length(lines),points)
     println("!!!以下是各规划时刻网损真实值统计情况：")
+    println(fileResult,"!!!以下是各规划时刻网损真实值统计情况：")
     for time in 1:points 
+        i=0
         loss_T_System=0
         for line in lines
+            i+=1
             if checkLineAlive(line,lineData)
+                lineLossPrintToFile[i,time]=base_S/1000*rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)])
                 println("****线路 $line 在 $time 规划时刻的网损大小(kW)为：",base_S/1000*rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)]))
+                println(fileResult,"****线路 $line 在 $time 规划时刻的网损大小(kW)为：",base_S/1000*rLineDict[line]*value(lineSquCurrent[(line[1],line[2],time)]))
                 loss_T_System+=base_S*rLineDict[line]/1000*value(lineSquCurrent[(line[1],line[2],time)])
+            else
+                #ATTITION!不可用线路网损置为0
+                lineLossPrintToFile[i,time]=0
             end
         end
         println("****在 $time 规划时刻的总体网损大小(kW)为：",loss_T_System)    
+        println(fileResult,"****在 $time 规划时刻的总体网损大小(kW)为：",loss_T_System)    
     end
+    array2dPrintToFile(lineLossPrintToFile,lineLossFileResult)
+    #println(lineLossFileResult,lineLossPrintToFile)
+
     if listMT!=()
+        #ATTITION!行号仅代表listMT中元素的序号
+        powerMTPrintToFile=Array{Complex}(undef,length(listMT),points)
         println("!!!以下是各MT在各规划时刻发出功率真实值统计情况：")
+        println(fileResult,"!!!以下是各MT在各规划时刻发出功率真实值统计情况：")
         for time in 1:points
+            i=0
             for mtNode in listMT
+                i+=1
                 if checkNodeAlive(mtNode,nodeData)
-                    println("****含MT的节点 $mtNode 在 $time 规划时刻的发出有功大小(kW)为：",base_S/1000*value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time])
-                    println("****含MT的节点 $mtNode 在 $time 规划时刻的发出无功大小(kVar)为：",base_S/1000*value(injectionReactivePower[(mtNode,time)])+consumeQ[mtNode,time])
+                    powerMTPrintToFile[i,time]=complex((base_S/1000*(value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time]))
+                    ,(base_S/1000*(value(injectionReactivePower[(mtNode,time)])+consumeQ[mtNode,time])))
+                    println("****MT $mtNode 在 $time 规划时刻的发出有功大小(kW)为：",base_S/1000*(value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time]))
+                    println("****MT $mtNode 在 $time 规划时刻的运行成本为：",mtInfDict[mtNode][5]*base_S/1000*(value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time]))
+                    println(fileResult,"****含MT的节点 $mtNode 在 $time 规划时刻的发出有功大小(kW)为：",base_S/1000*(value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time]))
+                    println(fileResult,"****MT $mtNode 在 $time 规划时刻的运行成本为：",mtInfDict[mtNode][5]*base_S/1000*(value(injectionActivePower[(mtNode,time)])+consumeP[mtNode,time]))
+                    println("****MT $mtNode 在 $time 规划时刻的发出无功大小(kVar)为：",base_S/1000*(value(injectionReactivePower[(mtNode,time)])+consumeQ[mtNode,time]))
+                    println(fileResult,"****含MT的节点 $mtNode 在 $time 规划时刻的发出无功大小(kVar)为：",base_S/1000*(value(injectionReactivePower[(mtNode,time)])+consumeQ[mtNode,time]))
+                else
+                    #ATTITION!不可用MT出力置为0
+                    powerMTPrintToFile[i,time]=0+0im
                 end
             end 
         end
+        array2dPrintToFile(powerMTPrintToFile,powerMTFileResult)
+        #println(powerMTFileResult,powerMTPrintToFile)
     end
-    println("!!!####测试用：显示b的情况：")
-    for pair in ijtjit1Pair 
-        println("****辅助变量b在 $pair 上的值为：" ,value(bAuxiliary[pair]))
+
+    powerSubstationPrintToFile=Array{Complex}(undef,length(listSub),points)
+    #ATTITION!行号仅代表listSub中元素的序号
+    println("!!!以下是变电站主变出线功率情况")
+    println(fileResult,"!!!以下是变电站主变出线功率情况")
+    for time in 1:points
+        i=0
+        for subNode in listSub
+            i+=1
+            powerSubstationPrintToFile[i,time]=Complex(base_S/1000*(value(injectionActivePower[(subNode,time)])),base_S/1000*(value(injectionReactivePower[(subNode,time)])))
+            println("****变电站 $subNode 在 $time 规划时刻从上级电网输入的有功大小(kW)为：",base_S/1000*(value(injectionActivePower[(subNode,time)])))
+            println(fileResult,"****变电站 $subNode 在 $time 规划时刻从上级电网输入的有功大小(kW)为：",base_S/1000*(value(injectionActivePower[(subNode,time)])))
+            println("****变电站 $subNode 在 $time 规划时刻从上级电网输入的无功大小(kVar)为：",base_S/1000*(value(injectionReactivePower[(subNode,time)])))
+            println(fileResult,"****变电站 $subNode 在 $time 规划时刻从上级电网输入的无功大小(kVar)为：",base_S/1000*(value(injectionReactivePower[(subNode,time)])))
+        end
     end
+    array2dPrintToFile(powerSubstationPrintToFile,powerSubstationFileResult)
+    #println(powerSubstationFileResult,powerSubstationPrintToFile)
+
+    # println("!!!####测试用：显示b的情况：")
+    # for pair in ijtjit1Pair 
+    #     println("****辅助变量b在 $pair 上的值为：" ,value(bAuxiliary[pair]))
+    # end
+    close(fileResult)
+    close(switchOperationFileResult)
+    close(powerMTFileResult)
+    close(nodeVoltageFileResult)
+    close(lineCurrentFileResult)
+    close(lineLossFileResult)
+    close(powerSubstationFileResult)
+
+    println("##################结束##########################")
     #println(bus33Reconfiguration)
 end
 
