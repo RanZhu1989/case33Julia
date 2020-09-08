@@ -1,4 +1,4 @@
-bus_no,start_node,end_node,r,x,I_bar,with_TieSwitch,is_Alive,init_State,S_base,U_base,Z_base,r*,x*,I*
+bus_no,start_node,end_node,r,x,I_bar,with_TieSwitch,is_Alive_init,init_State,S_base,U_base,Z_base,r*,x*,I*
 1,1,2,0.0922,0.047,420,0,1,1,1.00E+08,1.27E+04,1.60E+00,5.75E-02,2.93E-02,4.56E+03
 2,2,3,0.493,0.2511,420,0,1,1,1.00E+08,1.27E+04,1.60E+00,3.08E-01,1.57E-01,4.56E+03
 3,3,4,0.366,0.1864,420,0,1,1,1.00E+08,1.27E+04,1.60E+00,2.28E-01,1.16E-01,4.56E+03
