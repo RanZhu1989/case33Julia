@@ -1,4 +1,4 @@
-#NOTE  2020.9.6 v0.1 
+#NOTE  2020.9.9 v0.2 
 #NOTE  Author：Ran Zhu @ School of Cyber Engineering and Science, SEU
 #NOTE  弹性配电网最优潮流库文件
 
@@ -18,6 +18,7 @@
 #TODO 下一步规划：用CSV DataFrame 包建立内存数据库提高JuMP模型参数计算速度
 
 using DelimitedFiles
+
 
 #设置JuMP框架下所需所有参数
 function paraInit(DataPath,startPoint,endPoint)
@@ -51,7 +52,7 @@ function paraInit(DataPath,startPoint,endPoint)
     global lineSquCurrentMAX=(lineData[:,6])/base_I
     #读取联络开关位置，备用
     #global listFlagTieSwitch=lineData[:,7]
-
+    
     #读取线路各时刻存活状态文件 [t,linenum]
     #线路存活时alpha才具有{0，1}属性，线路故障时强制断开，其alpha值为0
     readLineFLAGData=readdlm(lineFLAGpath,',',header=true)
@@ -91,13 +92,18 @@ function paraInit(DataPath,startPoint,endPoint)
     global lineInitStartPoint=ijPairInit(startNode,endNode,stateInit,numLine)
 
     #读取存活的MT PV WT (i,t) #ATTITION!在重载函数时需要重新设置
-    global tsMTalive=creatEquipITpair("MT",points,DataPath)
-    global tsPValive=creatEquipITpair("PV",points,DataPath)
-    global tsWTalive=creatEquipITpair("WT",points,DataPath)
-
+    global tsMTalive=creatEquipITpair("MT",points,DataPath,"Tuple")
+    global tsPValive=creatEquipITpair("PV",points,DataPath,"Tuple")
+    global tsWTalive=creatEquipITpair("WT",points,DataPath,"Tuple")
+    global dicTSmtAlive=creatEquipITpair("MT",points,DataPath,"Dict")
+    global dicTSpvAlive=creatEquipITpair("PV",points,DataPath,"Dict")
+    global dicTSwtAlive=creatEquipITpair("WT",points,DataPath,"Dict")
+    
     #读取节点参数文件
     readNodeData=readdlm(paraNodePath,',',header=true)
     global nodeData=readNodeData[1]
+    #读取常开和常闭开关所在线路
+    global listIC,listIO=readtopologyData(nodeData)
     #找出所有变电站节点元组
     global listSub=findSub(nodeData)
     #找出所有含PV节点元组
@@ -196,10 +202,10 @@ function paraRolling(startPoint,endPoint,DataPath)
     global ijtjit1Pair=ijjiTime1Pair(linesAlive)
     global lineInitStartPoint=ijPairInit(startNode,endNode,stateInit,numLine)
     #读取存活的MT PV WT (i,t) #ATTITION!在重载函数时需要重新设置
-    global tsMTalive=creatEquipITpair("MT",points,DataPath)
-    global tsPValive=creatEquipITpair("PV",points,DataPath)
-    global tsWTalive=creatEquipITpair("WT",points,DataPath)
-    #生成各节点的(pv,wt,mt,t)安装状态的元组 #ATTITION!在重载函数时需要重新设置
+    global tsMTalive=creatEquipITpair("MT",points,DataPath,"Tuple")
+    global tsPValive=creatEquipITpair("PV",points,DataPath,"Tuple")
+    global tsWTalive=creatEquipITpair("WT",points,DataPath,"Tuple")
+    #生成各节点的(pv,wt,mt)安装状态的矩阵[] #ATTITION!在重载函数时需要重新设置
     global allocationDG=findAllocationDG(tsMTalive,tsPValive,tsWTalive,numNode,points)
 
     #读取TESTload #ATTITION!在重载函数时需要重新设置
@@ -282,7 +288,7 @@ end
 function readtopologyData(titleFreeNodeDataArray)
     #输入去掉表头的NodeData
     #读取初始拓扑配置
-    #返回存活的常闭开关元组，常开开关元组
+    #返回常闭开关元组，常开开关元组
     listIC=[]
     listIO=[]
     #常闭
@@ -290,15 +296,10 @@ function readtopologyData(titleFreeNodeDataArray)
     #常开
     indexIO=findall(x->x==0,titleFreeNodeDataArray[:,9])
     for i in 1:length(indexIC)
-        #检测存活性
-        if round(Int64,titleFreeNodeDataArray[indexIC[i],8])==1
-            push!(listIC,(round(Int64,titleFreeNodeDataArray[indexIC[i],2]),round(Int64,titleFreeNodeDataArray[indexIC[i],3])))
-        end
+        push!(listIC,(round(Int64,titleFreeNodeDataArray[indexIC[i],2]),round(Int64,titleFreeNodeDataArray[indexIC[i],3])))
     end
     for i in 1:length(indexIO)
-        if round(Int64,titleFreeNodeDataArray[indexIO[i],8])==1
-            push!(listIO,(round(Int64,titleFreeNodeDataArray[indexIO[i],2]),round(Int64,titleFreeNodeDataArray[indexIO[i],3])))
-        end
+        push!(listIO,(round(Int64,titleFreeNodeDataArray[indexIO[i],2]),round(Int64,titleFreeNodeDataArray[indexIO[i],3])))
     end
     return Tuple(listIC), Tuple(listIO)
 end
@@ -650,12 +651,13 @@ function findAllocationDG(tsMTalive,tsPValive,tsWTalive,numNode,points)
     return result
 end
 
-function creatEquipITpair(type,points,DataPath)
+function creatEquipITpair(type,points,DataPath,mode)
     #已测试
     #创建特定类型设备的(i,t)组成的元组 即在t时刻i节点上存活
     #DataPath 6=PV 7=MT 8=WT
     if type=="PV"
         result=[]
+        dictResult=[]
         readPVflagData=readdlm(DataPath[6],',',header=true)
         pvFLAG=readPVflagData[1]
         pvFLAGtitle=Tuple(readPVflagData[2])
@@ -666,12 +668,19 @@ function creatEquipITpair(type,points,DataPath)
         for t in 1:points
             for node in tempPVnode
                 push!(result,(node,t))
+                push!(dictResult,(t,node))
             end
         end
-        return Tuple(result)
+        if mode=="Tuple"
+            return Tuple(result)
+        end
+        if mode=="Dict"
+            return Dict(Tuple(dictResult))
+        end
     end
     if type=="MT"
         result=[]
+        dictResult=[]
         readMTflagData=readdlm(DataPath[7],',',header=true)
         mtFLAG=readMTflagData[1]
         mtFLAGtitle=Tuple(readMTflagData[2])
@@ -682,12 +691,19 @@ function creatEquipITpair(type,points,DataPath)
         for t in 1:points
             for node in tempMTnode
                 push!(result,(node,t))
+                push!(dictResult,(t,node))
             end
         end
-        return Tuple(result)  
+        if mode=="Tuple"
+            return Tuple(result)
+        end
+        if mode=="Dict"
+            return Dict(Tuple(dictResult))
+        end 
     end
     if type=="WT"
         result=[]
+        dictResult=[]
         readWTflagData=readdlm(DataPath[8],',',header=true)
         wtFLAG=readWTflagData[1]
         wtFLAGtitle=Tuple(readWTflagData[2])
@@ -698,9 +714,15 @@ function creatEquipITpair(type,points,DataPath)
         for t in 1:points
             for node in tempWTnode
                 push!(result,(node,t))
+                push!(dictResult,(t,node))
             end
         end
-        return Tuple(result)  
+        if mode=="Tuple"
+            return Tuple(result)
+        end
+        if mode=="Dict"
+            return Dict(Tuple(dictResult))
+        end   
     end
 end
 
@@ -709,6 +731,20 @@ function mtNode2AliveDataColumn(node,DataPath)
     readMTflagData=readdlm(DataPath[7],',',header=true)
     mtFLAGtitle=Tuple(readMTflagData[2])
     return findfirst(isequal("$node"),mtFLAGtitle)
+end
+
+function pvNode2AliveDataColumn(node,DataPath)
+    #返回pv节点对应与生存表中是第几列
+    readPVflagData=readdlm(DataPath[6],',',header=true)
+    pvFLAGtitle=Tuple(readPVflagData[2])
+    return findfirst(isequal("$node"),pvFLAGtitle)
+end
+
+function wtNode2AliveDataColumn(node,DataPath)
+    #返回wt节点对应与生存表中是第几列
+    readWTflagData=readdlm(DataPath[8],',',header=true)
+    wtFLAGtitle=Tuple(readWTflagData[2])
+    return findfirst(isequal("$node"),wtFLAGtitle)
 end
 
 function findTimeFalutLine(t,linesFault)
@@ -722,9 +758,18 @@ function findTimeFalutLine(t,linesFault)
     return  Tuple(result)
 end
 
-function updateStateInit(switchOperationPrintToFile,points,stateInit)
+function updateStateInit(switchOperationPrintToFile,points,stateInit,mode)
     #更新内存中的StateInit元组
-    for i in size(switchOperationPrintToFile)[2]
-        global stateInit[i]=switchOperationPrintToFile[points,i]
+    #mode="DP" 规划结果作为动作执行 initState更新为最后一个状态
+    #mode="MPC" 仅规划结果的第一个动作执行 initState更新为第一个状态
+    if mode=="DP"
+        for i in size(switchOperationPrintToFile)[2]
+            global stateInit[i]=switchOperationPrintToFile[points,i]
+        end
+    end
+    if mode=="MPC"
+        for i in size(switchOperationPrintToFile)[2]
+            global stateInit[i]=switchOperationPrintToFile[1,i]
+        end
     end
 end

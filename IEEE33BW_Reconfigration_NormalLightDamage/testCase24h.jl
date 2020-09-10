@@ -1,4 +1,4 @@
-#NOTE  2020.9.6 v0.7 
+#NOTE  2020.9.9 v0.9 
 #NOTE  Author：Ran Zhu @ School of Cyber Engineering and Science, SEU
 #NOTE  此.jl文件用于评估正常运行及一般事故运行时自适应运行优化器的效果
 #NOTE  **参数主要参考文献**：
@@ -24,18 +24,19 @@ include("opfSolver_LS9.6.jl")
 #Import Lib
 include("fuctions_Lib.jl")
 
+
 #############################################################################################################
 #Setting Data Path
-loadFilePath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_ISSDA_536Days_TS_33BW_load.csv"#1
-pvFilePath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_ts_33bus_PV_Xu2019TSG.csv"#2
-wtFilePath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_ts_33bus_WT_Xu2019TSG.csv"#3
-paraLinePath=".//33BUSdata//forTEST//Xu2019TSG//IEEE33BW_para_line.csv"#4
-paraNodePath=".//33BUSdata//forTEST//Xu2019TSG//IEEE38BW_para_node_Xu2019TSG.csv"#5
-pvFLAGpath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_FLAG_33bus_PV_Xu2019TSG.csv"#6
-mtFLAGpath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_FLAG_33bus_MT_Xu2019TSG.csv"#7
-wtFLAGpath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_FLAG_33bus_WT_Xu2019TSG.csv"#8
-lineFLAGpath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_FLAG_33bus_LINE_Xu2019TSG.csv"#9
-pricePath=".//33BUSdata//forTEST//Xu2019TSG//TEST24H_ts_33bus_Price_Xu2019TSG.csv"#10
+loadFilePath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_ISSDA_536Days_TS_33BW_load.csv"#1
+pvFilePath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_ts_33bus_PV_Xu2019TSG.csv"#2
+wtFilePath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_ts_33bus_WT_Xu2019TSG.csv"#3
+paraLinePath=".//Xu2019TSG//09DEC_TEST//IEEE33BW_para_line.csv"#4
+paraNodePath=".//Xu2019TSG//09DEC_TEST//IEEE38BW_para_node_Xu2019TSG.csv"#5
+pvFLAGpath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_FLAG_33bus_PV_Xu2019TSG.csv"#6
+mtFLAGpath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_FLAG_33bus_MT_Xu2019TSG.csv"#7
+wtFLAGpath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_FLAG_33bus_WT_Xu2019TSG.csv"#8
+lineFLAGpath=".//Xu2019TSG//09DEC_TEST//TEST209DEC_FLAG_33bus_LINE_Xu2019TSG.csv"#9
+pricePath=".//Xu2019TSG//09DEC_TEST//TEST09DEC_ts_33bus_Price_Xu2019TSG.csv"#10
 #Packing Data Path to Tuple
 #LOAD=1; pvSET=2; wtSET=3; paraLINE=4; paraNODE=5; pvFLAG=6; mtFLAG=7; wtFLAGpath=8; lineFLAG=9 price=10
 DataPath=(loadFilePath,pvFilePath,wtFilePath,paraLinePath,paraNodePath,pvFLAGpath,mtFLAGpath,wtFLAGpath,lineFLAGpath,pricePath)
@@ -60,7 +61,7 @@ global base_Z=(base_I)^2/base_S
 #网损电价
 global priceLoss=0.15
 #操作损耗
-global costSwitch=0.1#FIXME:操作成本需要设置，找参考文献！
+global costSwitch=4#FIXME:操作成本需要设置，找参考文献！
 #停电单位损失
 global failureLoss=1/(1000/base_S)#FIXME:停电成本需要设置，找参考文献！
 global unitLossPenaltyCoefficient=1000#FIXME:停电成本需要设置，找参考文献！
@@ -72,36 +73,60 @@ global highSquVNode=(1.05)^2
 global voltageSquSub=(1.00)^2
 #假设MT具备黑启动能力，其节点电压可设置为1.00pu
 global voltageBlackStartDG=1.00
-#ATTITION!每次开关最大动作次数 动态规划时使用这一条语句
-#global maxNS=2
-#ATTITION!无限制单步的优化用下面这条语句
-#NOTE 设置为0 csv文件中修改上下限约束 可以作为潮流计算用
-global maxNS=10
+#Minimum output of micro gas turbine
+#zeroLowerBound=1 
+#25% Pmax=0
+ZLBflag=1
+#joining in & dropping out control of MT PV WT
+#MT JDC NOT available now
+JDCflag=(0,0,0)
+global maxNS=2
 #大M 至少大于节点数即可
 global bigM=35
 
-#Setting time pointer
-global startPoint=1
-global endPoint=startPoint
+#Setting MICOP optimizer parameters
+#Setting relative gap termination tolerance
+reGap=1e-2
+#Setting maximum time spent by the mixed-integer optimizer, <0 => inf 
+maxTime=100
 
+#Setting planning start & end absolute time
+const planningStart=1
+const planningEnd=744
+
+#Setting absolute time pointer
+#if using MPC or DP mode, horizon>=1
+const horizon=3
+global startPoint=planningStart
+global endPoint=startPoint+horizon-1
+
+#Mode="DP" or "MPC"
+mode="MPC"
+#request general report
+global general_Report=0
 ############################################################################################
 totalStartTime=now()
+println("************StartingTime=$totalStartTime ************************")
 #Init parameters for JuMP model
 paraInit(DataPath,startPoint,endPoint)
-#run ptimizer for 1st time
-dpSolverReconfiguraiton33Bus("Mosek")
-#starting multi step planning
-for pointer in 2:24
-    global startPoint=pointer
-    global endPoint=startPoint
-    paraRolling(startPoint,endPoint,DataPath)
-    dpSolverReconfiguraiton33Bus("Mosek")
+#run optimizer for 1st time
+dpSolverReconfiguraiton33Bus("Mosek","MPC",maxTime,reGap,JDCflag,ZLBflag)
+if horizon>1
+    #starting multi step planning
+    for checkPoint in planningStart+1:planningEnd
+        global startPoint=checkPoint
+        if checkPoint+horizon-1<planningEnd
+            global endPoint=startPoint+horizon-1
+        else
+            global endPoint=planningEnd
+        end
+        paraRolling(startPoint,endPoint,DataPath)
+        dpSolverReconfiguraiton33Bus("Mosek","MPC",maxTime,reGap,JDCflag,ZLBflag)
+    end
 end
+
 totalEndTime=now()
-totalRunTime=parse(Float64,split(string(totalEndTime-totalStartTime)," ")[1])/1e4
+totalRunTime=parse(Float64,split(string(totalEndTime-totalStartTime)," ")[1])/1e3
 println("************Fininsh!*******************")
+println("************EndTime=$totalEndTime ************************")
 println("************Total Run Time= $totalRunTime seconds *******************")
-
-
-
-
