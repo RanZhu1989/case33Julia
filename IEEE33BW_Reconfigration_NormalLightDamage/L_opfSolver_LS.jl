@@ -32,7 +32,7 @@ using JuMP,MosekTools
 #ATTITION!  MUST make sure your workpath. 
 cd(@__DIR__)
 #Import Fuctions from .lib
-include("fuctions_Lib.jl")
+include("L_fuctions_Lib.jl")
 
 function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,ZLBflag)
     #第一个参数：优化器选择  第二个参数:优化模式 DP 或 MPC
@@ -63,17 +63,9 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #ATTITION!这里从时间0开始，代表初始状态
     #包含故障线路
     @variable(bus33Reconfiguration,alpha[ijt in time0NodePair],Bin,base_name="线路通断状态alpha")
-    #按标准状况指定初值
-    for ijt in linesAlive
-        if (ijt[1],ijt[2]) in listIC
-            set_start_value(alpha[(ijt[1],ijt[2],ijt[3])],1)
-        end
-        if (ijt[1],ijt[2]) in listIO
-            set_start_value(alpha[(ijt[1],ijt[2],ijt[3])],0)
-        end
-    end
+
     #表示节点负载率情况
-    @variable(bus33Reconfiguration,0<=loadRate[it in itPair]<=1,base_name="节点负载率loadRate",start=1.0)
+    @variable(bus33Reconfiguration,0<=loadRate[it in itPair]<=1,base_name="节点负载率loadRate",start=0.9999)
 
     #用于构建辐射状拓扑约束的中SCF约束虚拟首端网络流变量apparentFictitiousFlow_{ijt}
     #不包含故障线路
@@ -85,10 +77,10 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     @variable(bus33Reconfiguration,lambda[ijt in time1NodePair],Bin,base_name="开关变位辅助变量lambda",start=0)
 
     #MT有功出力P_mt_{i t}
-    @variable(bus33Reconfiguration,activePowerMT[it in tsMTalive],base_name="MT有功出力",start=0.0)
+    @variable(bus33Reconfiguration,activePowerMT[it in tsMTalive],base_name="MT有功出力")
     
     #MT无功出力Q_mt_{i t}
-    @variable(bus33Reconfiguration,reactivePowerMT[it in tsMTalive],base_name="MT无功出力",start=0.0)
+    @variable(bus33Reconfiguration,reactivePowerMT[it in tsMTalive],base_name="MT无功出力")
 
     # if mtJDCflag==1
     #     @variable(bus33Reconfiguration,mtJDC[it in tsMTalive],Bin,base_name="MT投退状态",start=1)
@@ -109,7 +101,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     @variable(bus33Reconfiguration,lineSquCurrent[ijt in time1NodePair],base_name="线路电流幅值平方")
 
     #ATTITION!节点电压平方幅值 V_{i t}
-    @variable(bus33Reconfiguration,nodeSquVoltage[it in itPair],base_name="节点电压幅值平方",start=1.0)
+    @variable(bus33Reconfiguration,nodeSquVoltage[it in itPair],base_name="节点电压幅值平方")
 
     #RDG JDC control Bin variable
    
@@ -119,6 +111,75 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     if wtJDCflag==1
         @variable(bus33Reconfiguration,wtJDC[it in tsWTalive],Bin,base_name="WT投退状态",start=1)
     end
+
+    #######################优化器初值设定############################
+    #线路通断状态
+    #第一次按标准状况指定初值
+    if startPoint==1
+        for ijt in linesAlive
+            if (ijt[1],ijt[2]) in listIC
+                set_start_value(alpha[(ijt[1],ijt[2],ijt[3])],1)
+            end
+            if (ijt[1],ijt[2]) in listIO
+                set_start_value(alpha[(ijt[1],ijt[2],ijt[3])],0)
+            end
+        end
+    #后面的前horzon-1次 按前一次过程中的经验设置初值
+    else
+        for t in 1:horizon-1  
+            for line in lines
+                set_start_value(alpha[(line[1],line[2],t)],alphaStartValue[t,lineDic[line]])
+            end  
+        end
+        for line in lines
+            if line in listIC
+                set_start_value(alpha[([1],line[2],endPoint)],1)
+            end
+            if line in listIO
+                set_start_value(alpha[([1],line[2],endPoint)],0)
+            end
+        end
+    end
+    #注入功率
+    if startPoint>1
+        for t in 1:horizon-1
+            for node in nodes
+                set_start_value(injectionActivePower[(node,t)],injectionPStartValue[t,node])
+                set_start_value(injectionReactivePower[(node,t)],injectionQStartValue[t,node])
+
+            end
+        end
+    end
+    #首端功率
+    if startPoint>1
+        for t in 1:horizon-1
+            for line in lines
+                set_start_value(apparentActivePower[(line[1],line[2],t)],apparentPStartValue[t,lineDic[line]])
+                set_start_value(apparentReactivePower[(line[1],line[2],t)],apparentQStartValue[t,lineDic[line]])
+            end
+        end
+    end
+    #线路电流幅值平方
+    if startPoint>1
+        for t in 1:horizon-1
+            for line in lines
+                set_start_value(lineSquCurrent[(line[1],line[2],t)],IsquStartValue[t,lineDic[line]])
+            end
+        end
+    end
+    #节点电压幅值平方
+    if startPoint>1
+        for t in 1:horizon-1
+            for node in nodes
+                set_start_value(nodeSquVoltage[(node,t)],VsquStartValue[t,node])
+            end
+        end
+    else
+        for node in nodes
+            set_start_value(nodeSquVoltage[(node,endPoint)],1.0)
+        end
+    end
+   
 
     #######################补充的变量取值范围#########################
 
@@ -325,7 +386,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     @objective(bus33Reconfiguration,Min,
     sum(mtInfDict[it[1]][5]*activePowerMT[it] for it in tsMTalive)
     +sum(sum(priceLoss*lineSquCurrent[(line[1],line[2],t)]*rLineDict[line] for line in lines)
-    +sum(stGridPrice[t-1+startPoint]*injectionActivePower[(subNode,t)] for subNode in listSub)
+    +sum(stGridPrice[t-1+startPoint]/(1000/base_S)*injectionActivePower[(subNode,t)] for subNode in listSub)
     +sum(costSwitch*(sum(lambda[(line[1],line[2],t)] for line in lines)))
     +sum(failureLoss*(1-loadRate[(i,t)])*consumeP[t,i] for i in nodes) 
     for t in 1:points)
@@ -756,4 +817,38 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
 
     #开关状态更新stateInit
     updateStateInit(switchOperationPrintToFile,points,stateInit,mode)
+    #保存规划经验
+    #保存线路通断状态
+    for t in 1:horizon-1
+        for line in lines
+            alphaStartValue[t,lineDic[line]]=round(Int64,value(alpha[(line[1],line[2],t)]))
+        end
+    end
+    #保存注入功率
+    for t in 1:horizon-1
+        for node in nodes
+            injectionPStartValue[t,node]=value(injectionActivePower[(node,t)])
+            injectionQStartValue[t,node]=value(injectionReactivePower[(node,t)])
+        end
+    end
+    #保存首端功率
+    for t in 1:horizon-1
+        for line in lines
+            apparentPStartValue[t,lineDic[line]]=value(apparentActivePower[(line[1],line[2],t)])
+            apparentQStartValue[t,lineDic[line]]=value(apparentReactivePower[(line[1],line[2],t)])
+        end
+    end
+    #保存线路电流幅值平方
+    for t in 1:horizon-1
+        for line in lines
+            IsquStartValue[t,lineDic[line]]=value(lineSquCurrent[(line[1],line[2],t)])
+        end
+    end
+    #保存节点电压幅值平方
+    for t in 1:horizon-1
+        for node in nodes
+            VsquStartValue[t,node]=value(nodeSquVoltage[(node,t)])
+        end
+    end
+    
 end

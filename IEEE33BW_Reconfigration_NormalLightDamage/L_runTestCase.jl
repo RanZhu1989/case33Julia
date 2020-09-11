@@ -20,9 +20,9 @@
 #Setting Current WorkPath
 cd(@__DIR__)
 #Import OPFsolver
-include("opfSolver_LS9.6.jl")
+include("L_opfSolver_LS.jl")
 #Import Lib
-include("fuctions_Lib.jl")
+include("L_fuctions_Lib.jl")
 
 
 #############################################################################################################
@@ -59,16 +59,16 @@ global base_I=(base_S)/sqrt(3)/base_V
 global base_Z=(base_I)^2/base_S
 
 #网损电价
-global priceLoss=0.15
+global priceLoss=0.5/(1000/base_S)
 #操作损耗
-global costSwitch=4#FIXME:操作成本需要设置，找参考文献！
+global costSwitch=10#FIXME:操作成本需要设置，找参考文献！
 #停电单位损失
-global failureLoss=1/(1000/base_S)#FIXME:停电成本需要设置，找参考文献！
+global failureLoss=5/(1000/base_S)#FIXME:停电成本需要设置，找参考文献！
 global unitLossPenaltyCoefficient=1000#FIXME:停电成本需要设置，找参考文献！
 #节点电压上下界,原文中电压等级为12kV
 #ATTITION!为线性化采用了电压幅值的平方作为变量！
-global lowSquVNode=(0.95)^2
-global highSquVNode=(1.05)^2
+global lowSquVNode=(0.90)^2
+global highSquVNode=(1.10)^2
 #变电站主变出线电压幅值
 global voltageSquSub=(1.00)^2
 #假设MT具备黑启动能力，其节点电压可设置为1.00pu
@@ -76,7 +76,7 @@ global voltageBlackStartDG=1.00
 #Minimum output of micro gas turbine
 #zeroLowerBound=1 
 #25% Pmax=0
-ZLBflag=1
+ZLBflag=0
 #joining in & dropping out control of MT PV WT
 #MT JDC NOT available now
 JDCflag=(0,0,0)
@@ -88,7 +88,7 @@ global bigM=35
 #Setting relative gap termination tolerance
 reGap=1e-2
 #Setting maximum time spent by the mixed-integer optimizer, <0 => inf 
-maxTime=100
+maxTime=200
 
 #Setting planning start & end absolute time
 const planningStart=1

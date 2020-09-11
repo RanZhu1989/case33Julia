@@ -72,6 +72,8 @@ function paraInit(DataPath,startPoint,endPoint)
     global itPair=time1itPair(numNode,points)
     #生成标准情况下的线路(i,j)元组
     global lines=Tuple((startNode[i],endNode[i]) for i in 1:numLine)
+    #生成(i,j)->NO.line的字典
+    global lineDic=Dict(lines .=>(i for i in 1:numLine))
     #生成规划尺度上t时刻存活的线路(i,j,t)元组 #ATTITION!在重载函数时需要重新设置
     global linesAlive=findTupleAliveLinesTS(lines,lineData,lineFLAG,startPoint,endPoint)
     #生成规划尺度上t时刻故障线路(i,j,t)元组 #ATTITION!在重载函数时需要重新设置
@@ -89,7 +91,21 @@ function paraInit(DataPath,startPoint,endPoint)
     #读取各线路初始状态 该初始状态stateInit将被solver.jl不断修改 
     global stateInit=round.(Int64,lineData[:,9])
     #ATTITION!在重载函数时需要重新设置
+    #开关状态初始点，用于计算开关动作次数
     global lineInitStartPoint=ijPairInit(startNode,endNode,stateInit,numLine)
+    #ATTITION!以下配置需要在Solver结尾处更新以供重载
+    #线路通断start_value 用于给优化器设定初值增加收敛速度
+    global alphaStartValue=Array{Int64}(undef,horizon-1,numLine)
+    #注入有功、无功的start_value
+    global injectionPStartValue=Array{Float64}(undef,horizon-1,numNode)
+    global injectionQStartValue=Array{Float64}(undef,horizon-1,numNode)
+    #首端有功无功的start_value
+    global apparentPStartValue=Array{Float64}(undef,horizon-1,numLine)
+    global apparentQStartValue=Array{Float64}(undef,horizon-1,numLine)
+    #线路电流幅值平方的start_value
+    global IsquStartValue=Array{Float64}(undef,horizon-1,numLine)
+    #节点电压幅值平方的start_value
+    global VsquStartValue=Array{Float64}(undef,horizon-1,numNode)
 
     #读取存活的MT PV WT (i,t) #ATTITION!在重载函数时需要重新设置
     global tsMTalive=creatEquipITpair("MT",points,DataPath,"Tuple")
