@@ -8,7 +8,7 @@ for term in Tuple(readdir(".//report//"))
             temp=split(fileName)
             push!(numPoint,parse(Int64,temp[3]))
         end
-        fileDic=OrderedDict(Tuple(numPoint).=>listFile)
+        fileDic=SortedDict(Tuple(numPoint).=>listFile)
         fileTerm=open("report//"*term*"//"*term*"_summary.txt","a+")
         for num in keys(fileDic)
             write(fileTerm,readlines(".//report//"*term*"//"*fileDic[num], keep=true)[1])
