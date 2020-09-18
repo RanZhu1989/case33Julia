@@ -18,7 +18,7 @@
 #TODO 下一步规划：用CSV DataFrame 包建立内存数据库提高JuMP模型参数计算速度
 
 using DelimitedFiles
-
+using DataStructures 
 
 #设置JuMP框架下所需所有参数
 function paraInit(DataPath,startPoint,endPoint)
@@ -67,7 +67,7 @@ function paraInit(DataPath,startPoint,endPoint)
     global nodes=1:numNode
     #遍历非根节点的迭代器
     #ATTITION!：这里人工指定了root=1
-    global  rootFreeNodes=2:numNode
+    global rootFreeNodes=2:numNode
     #(i,t) 节点-时间 二元组 t指规划尺度上的相对时刻 #ATTITION!在重载函数时需要重新设置
     global itPair=time1itPair(numNode,points)
     #生成标准情况下的线路(i,j)元组
@@ -348,6 +348,7 @@ end
 function checkLineAlive(line,lineData,t,lineFLAG)
     #已测试
     #检查一条线路(i,j)在t时刻是否存活
+    #ATTITION! t指绝对时刻
     for i in 1:length(lineData[:,1])
         if (lineData[i,2],lineData[i,3])==line
             if lineFLAG[t,i]==1
@@ -555,21 +556,24 @@ function findijNeighborNode(i,linesAlive,t)
     return Tuple(result)
 end
 
-function rootFreeFindijtNeighborNode(i,lines,points)
+function findIJJITNeighborNode(i,linesAlive)
     #已测试
-    #ATTITION!这是针对(i,j)U(j,i)的一个“向后"的搜索
+    #ATTITION!这是针对(i,j)U(j,i)的一个无向搜索
     #ATTITION!  points==endPoint-startPoint+1
     #NOTE 某些情况下可能存在没有邻居的情况
+    #NOTE 在重构问题中 都会存在至少一个邻居 （不形成孤岛）
     #返回节点i与所有可用邻居组成的(i,j,t)元组
     #这里的可用指：相连的线路存活为真
     #i=节点标号 lines=(i,j)元组集合 Data=读取的线路数据
     result=[]
-    for line in lines
-        if i==line[1]
-            for t in 1:points
-                temp=(line[1],line[2],t)
-                push!(result,temp)
-            end
+    for ijt in linesAlive
+        if i==ijt[1] 
+            temp=(ijt[1],ijt[2],ijt[3])
+            push!(result,temp)
+        end
+        if i==ijt[2]
+            temp=(ijt[2],ijt[1],ijt[3])
+            push!(result,temp)
         end
     end
     if result!=[]
@@ -681,10 +685,14 @@ function creatEquipITpair(type,points,DataPath,mode)
         for i in 1:length(pvFLAGtitle)
             push!(tempPVnode,parse(Int64,pvFLAGtitle[i]))
         end
+        #创建一个列数->node号的字典
+        num2NodeDic=SortedDict([i for i=1:length(pvFLAGtitle)].=>parse.(Int64,pvFLAGtitle))
         for t in 1:points
-            for node in tempPVnode
-                push!(result,(node,t))
-                push!(dictResult,(t,node))
+            for i in 1:length(pvFLAGtitle)
+                if pvFLAG[t,i]==1
+                    push!(result,(num2NodeDic[i],t))
+                    push!(dictResult,(t,num2NodeDic[i]))
+                end
             end
         end
         if mode=="Tuple"
@@ -704,10 +712,13 @@ function creatEquipITpair(type,points,DataPath,mode)
         for i in 1:length(mtFLAGtitle)
             push!(tempMTnode,parse(Int64,mtFLAGtitle[i]))
         end
+        num2NodeDic=SortedDict([i for i=1:length(mtFLAGtitle)].=>parse.(Int64,mtFLAGtitle))
         for t in 1:points
-            for node in tempMTnode
-                push!(result,(node,t))
-                push!(dictResult,(t,node))
+            for i in 1:length(mtFLAGtitle)
+                if mtFLAG[t,i]==1
+                    push!(result,(num2NodeDic[i],t))
+                    push!(dictResult,(t,num2NodeDic[i]))
+                end
             end
         end
         if mode=="Tuple"
@@ -724,13 +735,16 @@ function creatEquipITpair(type,points,DataPath,mode)
         wtFLAG=readWTflagData[1]
         wtFLAGtitle=Tuple(readWTflagData[2])
         tempWTnode=[]
+        num2NodeDic=SortedDict([i for i=1:length(wtFLAGtitle)].=>parse.(Int64,wtFLAGtitle))
         for i in 1:length(wtFLAGtitle)
             push!(tempWTnode,parse(Int64,wtFLAGtitle[i]))
         end
         for t in 1:points
-            for node in tempWTnode
-                push!(result,(node,t))
-                push!(dictResult,(t,node))
+            for i in 1:length(wtFLAGtitle)
+                if wtFLAG[t,i]==1
+                    push!(result,(num2NodeDic[i],t))
+                    push!(dictResult,(t,num2NodeDic[i]))
+                end
             end
         end
         if mode=="Tuple"

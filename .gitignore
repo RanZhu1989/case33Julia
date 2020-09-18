@@ -5,3 +5,6 @@
 /result重构.txt
 .gitignore
 /IEEE33BW_Reconfigration_NormalLightDamage/report
+/IEEE33BW_Reconfigration_NormalLightDamage/report1
+/IEEE33BW_Reconfigration_NormalLightDamage/experimentData
+.gitignore
