@@ -20,10 +20,10 @@
 #Setting Current WorkPath
 cd(@__DIR__)
 #Import OPFsolver: Adaptive or Normal Mode
-include("L_opfSolver_Li2019TSG.jl")
+include("L_opfSolverV2.jl")
 #include("L_opfSolver_Normal.jl")
 #Import Lib
-include("L_fuctions_Lib.jl")
+include("L_fuctions_LibV2.jl")
 
 
 #############################################################################################################
@@ -77,7 +77,7 @@ global voltageBlackStartDG=1.00
 #Minimum output of micro gas turbine
 #zeroLowerBound=1 
 #25% Pmax=0
-ZLBflag=1
+ZLBflag=0
 #joining in & dropping out control of MT PV WT
 #MT JDC NOT available now
 JDCflag=(0,0,0)
@@ -93,8 +93,8 @@ maxTime=200
 
 #Setting planning start & end absolute time
 #Total=12864 points
-const planningStart=1
-const planningEnd=12864
+const planningStart=7
+const planningEnd=7
 
 #Setting absolute time pointer
 #if using MPC or DP mode, horizon>=1
@@ -105,13 +105,15 @@ global endPoint=startPoint+horizon-1
 #Mode="DP" or "MPC"
 mode="MPC"
 #request general report
-global general_Report=0
+global general_Report=1
 ############################################################################################
 totalStartTime=now()
-println("************StartingTime=$totalStartTime ************************")
+println("************Initialization.....StartingTime=$totalStartTime ************************")
 #Init parameters for JuMP model
 paraInit(DataPath,startPoint,endPoint)
 #run optimizer for 1st time
+println("************$(now())***** Initialization Fininsh！************************")
+println("******************$(now())*****JuMP.jl->C++ Modeling************************************************")
 dpSolverReconfiguraiton33Bus("Mosek","MPC",maxTime,reGap,JDCflag,ZLBflag)
 #for test one-step mode
 if planningStart==planningEnd
