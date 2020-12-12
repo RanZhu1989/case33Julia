@@ -20,10 +20,10 @@
 #Setting Current WorkPath
 cd(@__DIR__)
 #Import OPFsolver: Adaptive or Normal Mode
-include("L_opfSolverV2.jl")
+include("L_opfSolverV1.jl")
 #include("L_opfSolver_Normal.jl")
 #Import Lib
-include("L_fuctions_LibV2.jl")
+include("L_fuctions_LibV1.jl")
 
 
 #############################################################################################################
@@ -38,9 +38,10 @@ mtFLAGpath=".//Xu2019TSG//Full_TEST//FULL_FLAG_33bus_MT_Xu2019TSG.csv"#7
 wtFLAGpath=".//Xu2019TSG//Full_TEST//FULL_FLAG_33bus_WT_Xu2019TSG.csv"#8
 lineFLAGpath=".//Xu2019TSG//Full_TEST//FULL_FLAG_33bus_LINE_Xu2019TSG.csv"#9
 pricePath=".//Xu2019TSG//Full_TEST//FULL_ts_33bus_Price_Xu2019TSG.csv"#10
+islandPath=".//Xu2019TSG//Full_TEST//FULL_FLAG_33bus_ISLAND_Xu2019TSG.csv"#11
 #Packing Data Path to Tuple
 #LOAD=1; pvSET=2; wtSET=3; paraLINE=4; paraNODE=5; pvFLAG=6; mtFLAG=7; wtFLAGpath=8; lineFLAG=9 price=10
-DataPath=(loadFilePath,pvFilePath,wtFilePath,paraLinePath,paraNodePath,pvFLAGpath,mtFLAGpath,wtFLAGpath,lineFLAGpath,pricePath)
+DataPath=(loadFilePath,pvFilePath,wtFilePath,paraLinePath,paraNodePath,pvFLAGpath,mtFLAGpath,wtFLAGpath,lineFLAGpath,pricePath,islandPath)
 ###################################################################################################################################
 
 ##############################################Setting Parameters###########################################################
@@ -89,23 +90,23 @@ global bigM=35
 #Setting relative gap termination tolerance
 reGap=1e-2
 #Setting maximum time spent by the mixed-integer optimizer, <0 => inf 
-maxTime=200
+maxTime=100
 
 #Setting planning start & end absolute time
 #Total=12864 points
-const planningStart=7
-const planningEnd=7
+const planningStart=1
+const planningEnd=500
 
 #Setting absolute time pointer
 #if using MPC or DP mode, horizon>=1
-const horizon=1
+const horizon=3
 global startPoint=planningStart
 global endPoint=startPoint+horizon-1
 
 #Mode="DP" or "MPC"
 mode="MPC"
 #request general report
-global general_Report=1
+global general_Report=0
 ############################################################################################
 totalStartTime=now()
 println("************Initialization.....StartingTime=$totalStartTime ************************")

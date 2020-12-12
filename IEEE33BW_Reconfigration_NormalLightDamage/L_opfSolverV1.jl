@@ -256,7 +256,8 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #假设MT是具备黑启动能力的，即电压可以设置为1.0 pu.
     if tsMTalive!=()  
         for it in tsMTalive
-            @constraint(bus33Reconfiguration,nodeSquVoltage[it]==1)
+            @constraint(bus33Reconfiguration,nodeSquVoltage[it]<=1.05)
+            @constraint(bus33Reconfiguration,nodeSquVoltage[it]>=0.95)
         end
     end
     # if tsPValive!=()  

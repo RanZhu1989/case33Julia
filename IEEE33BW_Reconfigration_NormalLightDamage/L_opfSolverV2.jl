@@ -66,7 +66,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     @variable(bus33Reconfiguration,loadRate[itPair],Bin,base_name="节点负载率loadRate",start=1)
 
     #表示节点通电情况 ϵ
-    @variable(bus33Reconfiguration,epsilon[itPair],Bin,base_name="节点通电状况epsilon")
+    # @variable(bus33Reconfiguration,epsilon[itPair],Bin,base_name="节点通电状况epsilon")
 
     #辅助变量beta
     #包含故障线路 有向
@@ -81,11 +81,11 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
 
     #McCormick包解决 epsilon*alpha 约束问题的辅助变量w1 (向前) 针对各时刻每个节点
     #i=节点号 m=节点邻居数量 t相对时间
-    @variable(bus33Reconfiguration,w1[w1Pair],Bin,base_name="带电状态设置时的辅助变量w1")
+    # @variable(bus33Reconfiguration,w1[w1Pair],Bin,base_name="带电状态设置时的辅助变量w1")
 
     #McCormick包解决 epsilon*alpha 约束问题的辅助变量w2 (向后) 针对各时刻每个节点
     #i=节点号 m=节点邻居数量 t相对时间
-    @variable(bus33Reconfiguration,w2[w2Pair],Bin,base_name="带电状态设置时的辅助变量w2")
+    # @variable(bus33Reconfiguration,w2[w2Pair],Bin,base_name="带电状态设置时的辅助变量w2")
 
     #用于构建开关次数约束的辅助变量lambda_{ijt}
     #ATTITION!这里从时间1开始
@@ -145,7 +145,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #后面的前horzon-1次 按前一次过程中的经验设置初值
     else
         if endPoint-startPoint+1<horizon
-            for t in 1:horizon-1  
+            for t in 1:endPoint-startPoint+1-1  
                 for line in lines
                     set_start_value(alpha[(line[1],line[2],t)],alphaStartValue[t,lineDic[line]])
                 end  
@@ -163,7 +163,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #注入功率
     if startPoint>1
         if endPoint-startPoint+1<horizon
-            for t in 1:horizon-1
+            for t in 1:endPoint-startPoint+1-1
                 for node in nodes
                     set_start_value(injectionActivePower[(node,t)],injectionPStartValue[(t,node)])
                     set_start_value(injectionReactivePower[(node,t)],injectionQStartValue[(t,node)])
@@ -175,7 +175,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #首端功率
     if startPoint>1
         if endPoint-startPoint+1<horizon
-            for t in 1:horizon-1
+            for t in 1:endPoint-startPoint+1-1
                 for line in lines
                     set_start_value(apparentActivePower[(line[1],line[2],t)],apparentPStartValue[(t,lineDic[line])])
                     set_start_value(apparentReactivePower[(line[1],line[2],t)],apparentQStartValue[(t,lineDic[line])])
@@ -186,7 +186,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #线路电流幅值平方
     if startPoint>1
         if endPoint-startPoint+1<horizon
-            for t in 1:horizon-1
+            for t in 1:endPoint-startPoint+1-1
                 for line in lines
                     set_start_value(lineSquCurrent[(line[1],line[2],t)],IsquStartValue[(t,lineDic[line])])
                 end
@@ -196,7 +196,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #节点电压幅值平方
     if startPoint>1
         if endPoint-startPoint+1<horizon
-            for t in 1:horizon-1
+            for t in 1:endPoint-startPoint+1-1
                 for node in nodes
                     set_start_value(nodeSquVoltage[(node,t)],VsquStartValue[(t,node)])
                 end
@@ -212,14 +212,14 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
 
     #######################补充的变量取值范围#########################
     #root及存活的MT节点一定是带电的
-    for t in 1:points
-        for root in listSub
-            @constraint(bus33Reconfiguration,epsilon[(root,t)]==1)
-        end
-    end
-    for it in tsMTalive
-        @constraint(bus33Reconfiguration,epsilon[it]==1)
-    end
+    # for t in 1:points
+    #     for root in listSub
+    #         @constraint(bus33Reconfiguration,epsilon[(root,t)]==1)
+    #     end
+    # end
+    # for it in tsMTalive
+    #     @constraint(bus33Reconfiguration,epsilon[it]==1)
+    # end
 
     
     #故障线路在对应时刻一定是断开的
@@ -227,6 +227,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
         @constraint(bus33Reconfiguration,alpha[(ijt[1],ijt[2],ijt[3])]==0)  
     end
    
+
     #将初始状态的alpha(i,j,0)存入
     #ATTITION! 此初始状态指读取para_Line文件中init_State列的状态，每次solver的末尾必须更新init_State
     #NOTE 由函数 updateStateInit 在调用求解器后设置
@@ -266,8 +267,8 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     #节点电压约束
     #不通电的节点强制为0
     for it in itPair
-        @constraint(bus33Reconfiguration,nodeSquVoltage[it]<=epsilon[it]*highSquVNode)
-        @constraint(bus33Reconfiguration,nodeSquVoltage[it]>=epsilon[it]*lowSquVNode)
+        @constraint(bus33Reconfiguration,nodeSquVoltage[it]<=highSquVNode)
+        @constraint(bus33Reconfiguration,nodeSquVoltage[it]>=lowSquVNode)
     end
 
     #ATTITION! 这里假设为普通配电网形式，也可配置为微电网型，此时变电站出线节点电压设置为浮动
@@ -448,25 +449,25 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
         end
     end
     #设置最终形成网架的alpha alpha可以是生成树的子图
-    for ijt in time1LineIJTPair
+    for ijt in linesAlive
         @constraint(bus33Reconfiguration,alpha[ijt]<=beta[ijt])
     end
 
     #若节点不带电，那么该节点负荷率强制为0
     #带电状态主要用于强制控制负荷率归0
-    for t in 1:points
-        for node in rootFreeNodes
-            @constraint(bus33Reconfiguration,-epsilon[(node,t)]*bigM<=loadRate[(node,t)])
-            @constraint(bus33Reconfiguration,loadRate[(node,t)]<=epsilon[(node,t)]*bigM)
-        end
-    end
+    # for t in 1:points
+    #     for node in rootFreeNodes
+    #         @constraint(bus33Reconfiguration,-epsilon[(node,t)]*bigM<=loadRate[(node,t)])
+    #         @constraint(bus33Reconfiguration,loadRate[(node,t)]<=epsilon[(node,t)]*bigM)
+    #     end
+    # end
        
 
     #通过检验邻居节点的带电状态设置本节点带电状态
     #故障线路在前面已经被设置为0
     #root MT 节点先前已设置，此处不需再设置
     #首先将约束 epsilon[j]*alpha[ij]用McCormick包替换成线性约束
-    #w_x(i,m,t) x=1~2 , i=除root和MT外节点 m=i的邻居节点数量 
+    #w_x(i,m,t) x=1~2 , i=除root和MT外节点 m=i的邻居节点号
     #先设置sum_{(i,j)∈L}(ϵ_j * α_ij)  对应w1向前 w2向后
     #每个i对应 N(i)个分支w
     #   W_x>=0
@@ -476,29 +477,29 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
 
 
 
-    for it in rootMtFreeitPair
-        #set w1
-        for find in findjkForwardNeighborPair(it[1],linesAlive,it[2])
-            @constraint(bus33Reconfiguration,w1[find]>=0)
-            @constraint(bus33Reconfiguration,w1[find]>=alpha[find]+epsilon[(find[2],find[3])]-1)
-            @constraint(bus33Reconfiguration,w1[find]<=alpha[find])
-            @constraint(bus33Reconfiguration,w1[find]<=epsilon[(find[2],find[3])])
-        end
-        #set w2
-        for find in findijBackforwardNeighborPair(it[1],linesAlive,it[2])
-            @constraint(bus33Reconfiguration,w2[find]>=0)
-            @constraint(bus33Reconfiguration,w2[find]>=alpha[find]+epsilon[(find[1],find[3])]-1)
-            @constraint(bus33Reconfiguration,w2[find]<=alpha[find])
-            @constraint(bus33Reconfiguration,w2[find]<=epsilon[(find[1],find[3])])
-        end
-        #set epsilon(i)<= [sum(w1)+sum(w2) ]/|N(i)| <=epsilon(i)
-        @constraint(bus33Reconfiguration,
-        sum(w1[imt] for imt in w1Pair if imt[1]==it[1]&&imt[3]==it[2])
-        +sum(w2[imt] for imt in w2Pair if imt[2]==it[1]&&imt[3]==it[2])>=epsilon[it])
-        @constraint(bus33Reconfiguration,sum(w1[imt] for imt in w1Pair if imt[1]==it[1]&&imt[3]==it[2])
-        +sum(w2[imt] for imt in w2Pair if imt[2]==it[1]&&imt[3]==it[2])
-        <=epsilon[it]*length(findijNeighborNode(it[1],linesAlive,it[2])))
-    end
+    # for it in rootMtFreeitPair
+    #     #set w1
+    #     for find in findjkForwardNeighborPair(it[1],time1LineIJTPair,it[2])
+    #         @constraint(bus33Reconfiguration,w1[find]>=0)
+    #         @constraint(bus33Reconfiguration,w1[find]>=alpha[find]+epsilon[(find[2],find[3])]-1)
+    #         @constraint(bus33Reconfiguration,w1[find]<=alpha[find])
+    #         @constraint(bus33Reconfiguration,w1[find]<=epsilon[(find[2],find[3])])
+    #     end
+    #     #set w2
+    #     for find in findijBackforwardNeighborPair(it[1],time1LineIJTPair,it[2])
+    #         @constraint(bus33Reconfiguration,w2[find]>=0)
+    #         @constraint(bus33Reconfiguration,w2[find]>=alpha[find]+epsilon[(find[1],find[3])]-1)
+    #         @constraint(bus33Reconfiguration,w2[find]<=alpha[find])
+    #         @constraint(bus33Reconfiguration,w2[find]<=epsilon[(find[1],find[3])])
+    #     end
+    #     #set epsilon(i)<= [sum(w1)+sum(w2) ]/|N(i)| <=epsilon(i)
+    #     @constraint(bus33Reconfiguration,
+    #     sum(w1[imt] for imt in w1Pair if imt[1]==it[1]&&imt[3]==it[2])
+    #     +sum(w2[imt] for imt in w2Pair if imt[2]==it[1]&&imt[3]==it[2])>=epsilon[it])
+    #     @constraint(bus33Reconfiguration,sum(w1[imt] for imt in w1Pair if imt[1]==it[1]&&imt[3]==it[2])
+    #     +sum(w2[imt] for imt in w2Pair if imt[2]==it[1]&&imt[3]==it[2])
+    #     <=epsilon[it]*length(findijNeighborNode(it[1],time1LineIJTPair,it[2])))
+    # end
 
     
     #开关操作次数约束
@@ -872,7 +873,7 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     end
     array2dPrint2File(powerSubstationPrintToFile,powerSubstationFileResult)
 
-    loadEnergrizedPrintToFile=Array{Int64}(undef,points,numNode)
+    loadEnergrizedPrintToFile=Array{Float64}(undef,points,numNode)
     println("!!!以下是阶段 "*timeCell*" 负荷投切状态")
     if general_Report==1
         println(fileResult,"!!!以下是阶段 "*timeCell*" 负荷投切情况")
@@ -925,16 +926,19 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
 
     
     # end  
-    for t in 1:points
-        for ij in lines
-            println("线路 $(ij[1]) ,$(ij[2]) 在 $t 时的beta值为 ",value.(beta[(ij[1],ij[2],t)]))
-        end
-    end
+    # for t in 1:points
+    #     for ij in lines
+    #         println("线路 $(ij[1]) ,$(ij[2]) 在 $t 时的beta值为 ",value.(beta[(ij[1],ij[2],t)]))
+    #     end
+    # end
 
-    for it in itPair
-        println("节点 $(it[1]) , 在 $(it[2]) 时的epsilon值为 ",value.(epsilon[(it[1],it[2])]))
-    end
-            
+    # for it in itPair
+    #     println("节点 $(it[1]) , 在 $(it[2]) 时的epsilon值为 ",value.(epsilon[(it[1],it[2])]))
+    # end
+
+    # for kijt in mulitCommodFlowPairs
+    #     println(fileResult," $kijt 的F值为： ",value.(apparentFictitiousFlow[kijt]))
+    # end
     
    
    
@@ -953,33 +957,33 @@ function dpSolverReconfiguraiton33Bus(typeOptimizer,mode,maxTime,reGap,JDCflag,Z
     updateStateInit(switchOperationPrintToFile,points,stateInit,mode)
     #保存规划经验
     #保存线路通断状态
-    for t in 1:horizon-1
+    for t in 1:endPoint-startPoint+1-1
         for line in lines
             alphaStartValue[t,lineDic[line]]=round(Int64,value(alpha[(line[1],line[2],t)]))
         end
     end
     #保存注入功率
-    for t in 1:horizon-1
+    for t in 1:endPoint-startPoint+1-1
         for node in nodes
             injectionPStartValue[t,node]=value(injectionActivePower[(node,t)])
             injectionQStartValue[t,node]=value(injectionReactivePower[(node,t)])
         end
     end
     #保存首端功率
-    for t in 1:horizon-1
+    for t in 1:endPoint-startPoint+1-1
         for line in lines
             apparentPStartValue[t,lineDic[line]]=value(apparentActivePower[(line[1],line[2],t)])
             apparentQStartValue[t,lineDic[line]]=value(apparentReactivePower[line[1],line[2],t])
         end
     end
     #保存线路电流幅值平方
-    for t in 1:horizon-1
+    for t in 1:endPoint-startPoint+1-1
         for line in lines
             IsquStartValue[t,lineDic[line]]=value(lineSquCurrent[(line[1],line[2],t)])
         end
     end
     #保存节点电压幅值平方
-    for t in 1:horizon-1
+    for t in 1:endPoint-startPoint+1-1
         for node in nodes
             VsquStartValue[t,node]=value(nodeSquVoltage[(node,t)])
         end

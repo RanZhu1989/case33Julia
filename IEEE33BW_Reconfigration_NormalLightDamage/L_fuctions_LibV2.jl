@@ -147,9 +147,9 @@ function paraInit(DataPath,startPoint,endPoint)
     #去掉root和mt后的时间-节点二元组 #ATTITION!在重载函数时需要重新设置 #FIXME: 还没有设置 
     global rootMtFreeitPair=mcITpairs(itPair)
     #辅助变量w1所用的(i,N(i)，t) 元组 #ATTITION!在重载函数时需要重新设置 #FIXME:还没有设置
-    global w1Pair=mkWpair(rootMtFreeitPair,linesAlive,"forward")
+    global w1Pair=mkWpair(rootMtFreeitPair,time1LineIJTPair,"forward")
     #辅助变量w2所用的(N(i),i，t) 元组 #ATTITION!在重载函数时需要重新设置 #FIXME:还没有设置
-    global w2Pair=mkWpair(rootMtFreeitPair,linesAlive,"backforward")
+    global w2Pair=mkWpair(rootMtFreeitPair,time1LineIJTPair,"backforward")
     #读取价格参数 绝对时间尺度
     readPriceData=readdlm(pricePath,',',header=true)
     global priceData=readPriceData[1]
@@ -230,8 +230,8 @@ function paraRolling(startPoint,endPoint,DataPath)
     #生成规划尺度上t时刻故障线路(i,j,t)元组 #ATTITION!在重载函数时需要重新设置
     global linesFault=findTupleFaultLinesTS(lines,lineData,lineFLAG,startPoint,endPoint)
     #所有的(i,j,t)三元组穷举 t指规划时刻 #ATTITION!在重载函数时需要重新设置
-    global time1NodePair=lines2TimePair(lines,points,1)
-    global time0NodePair=lines2TimePair(lines,points,0)
+    global time1LineIJTPair=lines2TimePair(lines,points,1)
+    global time1LineIJTPair=lines2TimePair(lines,points,0)
     #各时刻存活的 (i,j,t) (j,i,t)三元组 t=1：points #ATTITION!在重载函数时需要重新设置
     global ijtjit1Pair=ijjiTime1Pair(linesAlive)
     global lineInitStartPoint=ijPairInit(startNode,endNode,stateInit,numLine)
@@ -244,9 +244,9 @@ function paraRolling(startPoint,endPoint,DataPath)
     #去掉root和mt后的时间-节点二元组 #ATTITION!在重载函数时需要重新设置 #FIXME: 还没有设置 
     global rootMtFreeitPair=mcITpairs(itPair)
     #辅助变量w1所用的(i,N(i)，t) 元组 #ATTITION!在重载函数时需要重新设置 #FIXME:还没有设置
-    global w1Pair=mkWpair(rootMtFreeitPair,linesAlive,"forward")
+    global w1Pair=mkWpair(rootMtFreeitPair,time1LineIJTPair,"forward")
     #辅助变量w2所用的(i,N(i)，t) 元组 #ATTITION!在重载函数时需要重新设置 #FIXME:还没有设置
-    global w2Pair=mkWpair(rootMtFreeitPair,linesAlive,"backforward")
+    global w2Pair=mkWpair(rootMtFreeitPair,time1LineIJTPair,"backforward")
     #读取TESTload #ATTITION!在重载函数时需要重新设置
     #ATTITION!.csv文件填入真实值，读取时转换为标幺值
     #已测试
@@ -308,25 +308,25 @@ end
 #############################################################################
 
 
-function mkWpair(rootMtFreeitPair,linesAlive,type)
+function mkWpair(rootMtFreeitPair,ijtPair,type)
     #针对w1和w2 生成(i,N(i),t） 列表
     result=[]
     for it in rootMtFreeitPair
         if type=="forward"
-            tempPair=findjkForwardNeighborPair(it[1],linesAlive,it[2])
+            tempPair=findjkForwardNeighborPair(it[1],ijtPair,it[2])
             tempNumFind=length(tempPair)
         end
         if type=="backforward"
-            tempPair=findijBackforwardNeighborPair(it[1],linesAlive,it[2])
+            tempPair=findijBackforwardNeighborPair(it[1],ijtPair,it[2])
             tempNumFind=length(tempPair)
         end
         if tempNumFind>0
             for pair in tempPair
                 if type=="forward"
-                    push!(result,(it[1],pair[2],it[2])) 
+                    push!(result,(pair[1],pair[2],pair[3])) 
                 end
                 if type=="backforward"
-                    push!(result,(pair[1],it[1],it[2])) 
+                    push!(result,(pair[1],pair[2],pair[3])) 
                 end
             end
         end
@@ -651,13 +651,13 @@ function time1itPair(numNode,points)
     return result
 end
 
-function findijNeighborNode(i,linesAlive,t)
+function findijNeighborNode(i,ijtPair,t)
     #已测试
     #返回节点i在t时刻与所有可用邻居组成的(i,j)元组
     #这里的可用指：相连的线路存活为真
-    #i=节点标号 linesAlive=(i,j,t)元组集合 t=所检查的时刻
+    #i=节点标号 ijtPair=(i,j,t)元组集合 t=所检查的时刻
     result=[]
-    for ijt in linesAlive
+    for ijt in ijtPair
         if  t==ijt[3]
             if i in (ijt[1],ijt[2])
                 push!(result,(ijt[1],ijt[2],t))
@@ -667,7 +667,7 @@ function findijNeighborNode(i,linesAlive,t)
     return Tuple(result)
 end
 
-function findIJJITNeighborNode(i,linesAlive)
+function findIJJITNeighborNode(i,ijtPair)
     #已测试
     #ATTITION!这是针对(i,j)U(j,i)的一个无向搜索
     #ATTITION!  points==endPoint-startPoint+1
@@ -677,7 +677,7 @@ function findIJJITNeighborNode(i,linesAlive)
     #这里的可用指：相连的线路存活为真
     #i=节点标号 lines=(i,j)元组集合 Data=读取的线路数据
     result=[]
-    for ijt in linesAlive
+    for ijt in ijtPair
         if i==ijt[1] 
             temp=(ijt[1],ijt[2],ijt[3])
             push!(result,temp)
@@ -721,12 +721,12 @@ function findDMCijjiNeighborPairs(i,undirectedLines,mode)
     end
 end
 
-function findjkForwardNeighborPair(j,linesAlive,t)
+function findjkForwardNeighborPair(j,ijtPair,t)
     #已测试
     #返回节点j在t时刻给定方向与下游可形成连接的邻居节点组成的(j,k)元组
     #方向实际由csv文件的起讫点给出
     result=[]
-    allPair=findijNeighborNode(j,linesAlive,t)
+    allPair=findijNeighborNode(j,ijtPair,t)
     for pair in allPair
         if pair[1]==j
             push!(result,pair)
@@ -735,12 +735,12 @@ function findjkForwardNeighborPair(j,linesAlive,t)
     return Tuple(result)
 end
 
-function findijBackforwardNeighborPair(j,linesAlive,t)
+function findijBackforwardNeighborPair(j,ijtPair,t)
     #已测试
     #返回节点j在给定方向与上游可形成连接的邻居节点组成的(i,j)元组
     #方向实际由csv文件的起讫点给出
     result=[]
-    allPair=findijNeighborNode(j,linesAlive,t)
+    allPair=findijNeighborNode(j,ijtPair,t)
     for pair in allPair
         if pair[2]==j
             push!(result,pair)
